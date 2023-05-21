@@ -1,0 +1,14 @@
+.idea/
+.ipynb_checkpoints/
+__pycache__/
+cifar-10-batches-py/
+save/
+
+toolset/__pycache__/
+
+
+60.pth
+cifar-10-python.tar.gz
+fuck_epoch_13.pkl
+tran.pth
+
