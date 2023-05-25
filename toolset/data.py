@@ -4,9 +4,51 @@ from typing import Tuple
 import torch
 import torchvision
 from torchvision.datasets import CIFAR10
+import torchvision.transforms as transforms
 from toolset import utils
 import matplotlib.pyplot as plt
 
+def tensor_to_imggrid_show(X) ->list:
+    classes = ["plane", "car", "bird", "cat", "deer", "dog", "frog", "horse", "ship", "truck"]
+    
+    inverse_norm = transforms.Compose(
+        [
+            transforms.Normalize(mean=[0., 0., 0.], std=[1 / 0.4914, 1 / 0.4822, 1 / 0.4465]),
+            transforms.Normalize(mean=[-0.247, -0.243, -0.261], std=[1., 1., 1.]),
+        ]
+    )
+    
+    utils.reset_seed(0)
+    N = X.shape[0]
+    
+    img = torchvision.utils.make_grid(X, nrow=N)
+    img = inverse_norm(img)
+    plt.axis("off")
+    plt.imshow(utils.tensor_to_image(img))
+    plt.show()
+    return
+
+    for cls, name in enumerate(classes):
+        # 手工调试，让classes name 处于一个较好的位置
+        plt.text(-4, 34 * cls + 18, name, ha="right")  # ha=right让文字右对齐
+        # @ 获取y_train中分类是cls的所有样本的下标（沿着N）
+        # (y_train == cls) 返回一个布尔张量，元素值为 True 的位置对应 `y_train` 中等于 `cls` 的元素
+        # .nonzero(as_tuple=True) 函数会返回一个包裹张量的元组，包含y_train的维度个张量（这里是1个），
+        # 其中张量的值对应输入中非零元素（即布尔张量中为 True 的元素）的索引。
+        # (idxs, ) 则将这个元组解包，得到一个包含所有 `y_train` 中等于 `cls` 的元素的索引的张量, shape (k, ), k<=N
+        (idxs,) = (y == cls).nonzero(as_tuple=True)
+        # 抽取sample_per_class个图片放入samples
+        for _ in range(sample_per_class):
+            idx = idxs[random.randrange(idxs.shape[0])].item()  # 随机抽取一个idx
+            samples.append(X[idx])
+    # 让多张tensor图片合并为一张tensor图片，以grid的形式展现
+    img = torchvision.utils.make_grid(samples, nrow=sample_per_class)  # nrow是一行展示的图片数量
+    # plt绘图，使用image格式((H, W, 3)的ndarray)
+    plt.imshow(utils.tensor_to_image(img))
+    plt.axis("off")
+    plt.show()
+
+    
 
 def _extract_tensors(dset, num=None, x_dtype=torch.float32) -> Tuple[torch.Tensor, torch.Tensor]:
     """
@@ -71,7 +113,8 @@ def preprocess_cifar10(
         bias_trick=False,
         flatten=True,
         validation_ratio=0.2,
-        dtype=torch.float32
+        dtype=torch.float32,
+        tpu=None
 ):
     r"""
     返回预处理后的CIFAR10tensor数据集、以字典的格式给出，如果需要的话会自动下载。我们执行以下步骤：
@@ -101,7 +144,12 @@ def preprocess_cifar10(
     X_train, y_train, X_test, y_test = cifar10(x_dtype=dtype)
 
     # 转向GPU
-    if cuda:
+    if tpu is not None:
+        X_train = X_train.to(tpu)
+        y_train = y_train.to(tpu)
+        X_test = X_test.to(tpu)
+        y_test = y_test.to(tpu)
+    elif cuda:
         X_train = X_train.cuda()
         y_train = y_train.cuda()
         X_test = X_test.cuda()
@@ -141,9 +189,15 @@ def preprocess_cifar10(
     # 这个过程就像是在一个三维的像素空间中，首先将所有图像叠加在一起（按 N 维度压缩），得到一个平均的“立体图像”。
     # 然后在这个平均的“立体图像”中，我们按照高度（H 维度）和宽度（W 维度）将所有的像素值压缩成一个平均值，
     # 得到一个在每个颜色通道上都有一个平均值的“点”（C 维度的向量, 这里就是3维度）。
-    mean_image = X_train.mean(dim=(0, 2, 3), keepdim=True)  # (1, C, 1, 1)
-    X_train -= mean_image
-    X_test -= mean_image
+    
+    # CIFAR-10的预计算均值和标准差
+    mean = torch.tensor([0.4914, 0.4822, 0.4465], device=X_train.device).view(1, 3, 1, 1)
+    std = torch.tensor([0.247, 0.243, 0.261],  device=X_train.device).view(1, 3, 1, 1)
+    # 归一化
+    X_train.sub_(mean).div_(std)
+    X_test.sub_(mean).div_(std)
+
+
 
     # (2) 将形状为(N, C, H, W)的张量重塑为(N, C*H*W)的向量
     if flatten:

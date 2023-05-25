@@ -6,11 +6,62 @@ import matplotlib.pyplot as plt
 import random
 import math
 from toolset.solver import Solver
+from PIL import Image
+import torchvision.transforms as transforms
+
+def pil_to_tensor(image: Image, image_type: str) -> torch.Tensor:
+    if image_type == 'mnist':
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.1307,), (0.3081,))   # mean, std for MNIST
+        ])
+    elif image_type == 'CIFAR':
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))  # mean, std for CIFAR-10
+        ])
+    else:
+        raise ValueError(f"Invalid image_type: {image_type}")
+
+    return transform(image)
+
+
+
+def get_mnist_data():
+    """
+    加载mnist数据集(全部)。
+
+    Returns:
+        train_data: tensor，训练数据
+        train_labels: tensor，训练标签
+        test_data: tensor，测试数据
+        test_labels: tensor，测试标签
+    """
+    # 符合mnist的转换，将数据集转换为均值为0、方差为1的分布。
+    transform = torchvision.transforms.Compose([
+        torchvision.transforms.ToTensor(),
+        torchvision.transforms.Normalize((0.1307,), (0.3081,)),   # mean， std
+    ])
+    
+    MNIST_train_set = torchvision.datasets.MNIST(
+    "mnist_dataset/", train=True, download=True, transform=transform
+    )
+    MNIST_test_set = torchvision.datasets.MNIST(
+        "mnist_dataset/", train=False, download=True, transform=transform
+    )
+    
+    train_loader = torch.utils.data.DataLoader(MNIST_train_set, batch_size=len(MNIST_train_set), shuffle=True)
+    test_loader = torch.utils.data.DataLoader(MNIST_test_set, batch_size=len(MNIST_test_set), shuffle=True)
+
+    train_data, train_labels = next(iter(train_loader))
+    test_data, test_labels = next(iter(test_loader))
+    
+    return train_data, train_labels, test_data, test_labels
 
 
 def get_CIFAR10_data(validataion_ratio=0.02, flatten=False):
     """
-    从磁盘加载CIFAR10数据，用于线性分类器*
+    从磁盘加载CIFAR10数据。
     将使用cuda，展示图片。
     Args:
         validataion_ratio: 验证集的比例
@@ -38,10 +89,17 @@ def plot_solver(solver:Solver):
     stat_dict = {'loss_history':solver.loss_history,
                  'train_acc_history':solver.train_acc_history,
                  'val_acc_history':solver.val_acc_history}
-    plot_stats(stat_dict)
+    
+    lr_reg_str = ""
+    try:
+        lr_reg_str = f"lr:{solver.learning_rate}, reg:{solver.model.reg}"
+    except:
+        pass
+    
+    plot_stats(stat_dict, lr_reg_str)
     
 
-def plot_stats(stat_dict):
+def plot_stats(stat_dict, extra_str="",x=0.8,y=-0.11):
     """
     绘制loss函数变化，训练验证的准确率变化。
     Args:
@@ -66,7 +124,10 @@ def plot_stats(stat_dict):
     plt.xlabel('Epoch')
     plt.ylabel('Classification accuracy')
     plt.legend()  # 给出图例
-
+    ax = plt.gca()
+    
+    
+    plt.text(x, y, s=extra_str, transform=ax.transAxes)
     plt.gcf().set_size_inches(14, 4)  # gcf get current figure
     plt.show()
 

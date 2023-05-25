@@ -3,6 +3,7 @@
 __pycache__/
 cifar-10-batches-py/
 save/
+mnist_dataset/
 
 toolset/__pycache__/
 
@@ -11,4 +12,13 @@ toolset/__pycache__/
 cifar-10-python.tar.gz
 fuck_epoch_13.pkl
 tran.pth
+5_25_mini_epoch_47.pkl
+50epoch100%_epoch_50.pkl
+lrreg.pth
+net16_5_25_mini.pth
+mnist_5_25.pth
+tk_plot_mnist.py
+tran.pth
+vgg16_test.ipynb
+vgg19_test.ipynb
 

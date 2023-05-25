@@ -1,6 +1,7 @@
 import pickle  # 序列化反序列化
 import time
 import torch
+import copy
 
 class Solver(object):  # 求解器
     """
@@ -20,33 +21,25 @@ class Solver(object):  # 求解器
 
             **kwargs: 可选参数:
             - update_rule: 更新规则，默认sgd。
-
             - optim_config: 包含对应于更新规则的字典，不同的更新规则需要不同的参数，但是所有的规则都需要包含`learning_rate`键。
-
             - lr_decay: 标量，每轮(epoch)之后learning_rate会乘以这个值。
-
-            - batch_size: 一批的数量。
-
+            - batch_size: 训练/loss计算的一批的数量。
             - num_epochs: 训练轮数。
-
             - pring_every: 整数，表示每多少次迭代就打印信息(iteration)
-
             - print_acc_every: 整数，表示每多少次迭代就打印准确率(iteration)
-
             - verbose: 布尔类型，如果设置为False则去除所有打印信息，默认为True
-
-            - num_train_samples: 用于测试训练准确率的样本数，默认1000，设为None则用所有的训练数据
-
-            - num_val_sample: 用于验证准确率的样本数，设为None则用所有的验证数据
-
+            - num_train_samples: 用于计算训练准确率的样本数，默认1000，传入None则为所有训练数据
+            - num_val_sample: 用于计算验证准确率的样本数，设为None则用所有的验证数据
             - checkpoint_name: 如果不为None则每轮都保存model
         """
         self.model = model
         self.X_train, self.y_train = data["X_train"], data["y_train"]
         self.X_val, self.y_val = data["X_val"], data["y_val"]
-        # 解包
-        self.update_rule = kwargs.pop("update_rule", self.sgd)  # 有则取，没有则取第二项
+        # 解包kwargs
+        self.update_rule = kwargs.pop("update_rule", self.sgd)  # pop是有则取，没有则取第二项。然后删除kwargs中的对应键。
         self.optim_config = kwargs.pop("optim_config", {})
+        self.optim_config.setdefault('learning_rate', 1e-4)  # 设置了lr就用，没有则默认1e-4
+        self.learning_rate = self.optim_config['learning_rate']
         self.lr_decay = kwargs.pop("lr_decay", 1.0)
         self.batch_size = kwargs.pop("batch_size", 100)
         self.num_epochs = kwargs.pop("num_epochs", 10)
@@ -58,6 +51,7 @@ class Solver(object):  # 求解器
         self.print_every = kwargs.pop("print_every", 10)
         self.print_acc_every = kwargs.pop("print_acc_every", 1)
         self.verbose = kwargs.pop("verbose", True)
+        self.check_batch_size = kwargs.pop("check_batch_size", 200)
 
         # 如果存在未识别的参数则报错
         if len(kwargs) > 0:
@@ -71,7 +65,8 @@ class Solver(object):  # 求解器
         """
         self.epoch = 0
         self.best_val_acc = 0
-        self.best_params = {}
+        self.best_params = {}  # 会在训练中赋给model，没有保存
+        self.best_bn_params = {}
         self.loss_history = []
         self.train_acc_history = []
         self.val_acc_history = []
@@ -91,9 +86,9 @@ class Solver(object):  # 求解器
 
         # 将模型的参数深拷贝到optim_configs 注意不是 optim_config
         self.optim_configs = {}  # k:v, k为单个权重的名称(W1,b1,etc.)，v为初始优化配置字典，每个权重都有优化配置字典
-        for p in self.model.params:  # 遍历key
-            d = {k: v for k, v in self.optim_config.items()}
-            self.optim_configs[p] = d
+        for p in self.model.params:  # 遍历key，也是model的参数权重的名称
+            d = {k: v for k, v in self.optim_config.items()}  # 拷贝字典到d
+            self.optim_configs[p] = d # 每个权重一个配置字典
 
     def _step(self):
         """
@@ -126,17 +121,21 @@ class Solver(object):  # 求解器
         if self.checkpoint_name is None:
             return
         checkpoint = {
-            "model": self.model,
-            "update_rule": self.update_rule,
-            "optim_config": self.optim_config,
-            "lr_decay": self.lr_decay,
-            "batch_size": self.batch_size,
-            "num_train_samples": self.num_train_samples,
-            "num_val_samples": self.num_val_samples,
-            "epoch": self.epoch,
-            "loss_history": self.loss_history,
-            "train_acc_history": self.train_acc_history,
-            "val_acc_history": self.val_acc_history,
+            'model': self.model,
+            'update_rule': self.update_rule,
+            'optim_config': self.optim_config,
+            'learning_rate': self.learning_rate,
+            'lr_decay': self.lr_decay,
+            'batch_size': self.batch_size,
+            'num_epochs': self.num_epochs,
+            'num_train_samples': self.num_train_samples,
+            'num_val_samples': self.num_val_samples,
+            
+            'epoch': self.epoch,
+            'best_val_acc': self.best_val_acc,
+            'loss_history': self.loss_history,
+            'train_acc_history': self.train_acc_history,
+            'val_acc_history': self.val_acc_history,
         }
         filename = f"{self.checkpoint_name}_epoch_{self.epoch}.pkl"
         if self.verbose:
@@ -168,18 +167,18 @@ class Solver(object):  # 求解器
         return w, config
     
 
-    def check_accuracy(self, X, y, num_samples=None, batch_size=100) -> float:
+    def check_accuracy(self, X, y, num_samples=None) -> float:
         r"""
         提供数据，返回准确率
         Args:
             X: tensor，shape (N, d_1, ..., d_k)
             y: tensor，shape (N,)
             num_samples: 选择指定数量的样本进行测试，为空则全部样本
-            batch_size: 逐批检测，防止内存占用过大
 
         Returns:
             accs: 标量，预测正确的比例(准确率)
         """
+        batch_size = self.check_batch_size  # 默认200张
         N = X.shape[0]
         if num_samples is not None and N > num_samples:
             mask = torch.randperm(N, device=self.device)[:num_samples]
@@ -251,11 +250,12 @@ class Solver(object):  # 求解器
                     self.optim_configs[k]["learning_rate"] *= self.lr_decay
 
             # 检查train和val准确率，每轮epoch计算
-            with torch.no_grad():
-                first_it = t == 0
-                last_it = t == num_iterations - 1
-
-                if epoch_end or first_it or last_it:
+            
+            first_it = t == 0
+            last_it = t == num_iterations - 1
+            
+            if epoch_end or first_it or last_it:
+                with torch.no_grad():
                     train_acc = self.check_accuracy(self.X_train, self.y_train, self.num_train_samples)
                     val_acc = self.check_accuracy(self.X_val, self.y_val, self.num_val_samples)
 
@@ -268,13 +268,26 @@ class Solver(object):  # 求解器
 
                     # 保存最好的模型
                     if val_acc > self.best_val_acc:
+                        print(f"更新:当前准确率{val_acc*100:.2f}, 大于之前的最佳准确率{self.best_val_acc*100:.2f}\n")
                         self.best_val_acc = val_acc
-                        self.best_params = {}
                         for k, v in self.model.params.items():
                             self.best_params[k] = v.clone()
-
+                            try:
+                                self.best_bn_params = copy.deepcopy(self.model.bn_params)
+                                print("复制BN参数成功")
+                            except AttributeError:
+                                pass
+        #TODO 检查有效性
         if return_best_params:
+            #! 由于带有bn的model需要额外的运行时BN参数，如果直接把self.best_params给到self.model.params,则会导致BN参数不匹配
+            # 进而导致造成准确率低下。
             self.model.params = self.best_params
+            try:
+                self.model.bn_params = copy.deepcopy(self.best_bn_params)
+            except AttributeError:
+                pass
+
+
 
 
 

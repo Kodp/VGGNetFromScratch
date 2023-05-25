@@ -475,35 +475,55 @@ class FullyConnectedNet(object):
         return loss, grads
 
 
-def create_solver_instance(data_dict, dtype, device):
-    model = TwoLayerNet(hidden_dim=200, dtype=dtype, device=device)
-    solver = None
+class Dropout(object):
 
-    # $ Solver的默认初始学习率为1e-2，设置lr_decay<1会导致以前错误的实现准确率停留在40%上不去，因为这个帮我发现了之前反向传播梯度实现的一个bug
-    # $ 初始学习率略低时不要设置lr_decay，在53代达到50%准确率,得到120代才53%；所以学习率设为1时，学习率下降略微激进,0.1*0.93^30=0.01
-    # solver = Solver(model=model,data=data_dict,lr_decay=0.999,num_epochs=100,print_every=500,device=device)
-    solver = Solver(model=model,
-                    data=data_dict,
-                    optim_config={"learning_rate": 0.1},
-                    lr_decay=0.93,
-                    num_epochs=20,
-                    print_every=500,
-                    device=device)
+    @staticmethod
+    def forward(x, dropout_param):
+        """
+        执行（反向）dropout的前向传播。
+        输入：
+        - x：输入数据，任意形状的张量。
+        - dropout_param：包含以下键的字典：
+          - p：dropout参数。我们以概率p**丢弃**每个神经元的输出。
+          - mode：'test'或'train'。如果模式为'train'，则执行dropout；
+            如果模式为'test'，则只返回输入。
+        输出：
+        - out：与x形状相同的张量。
+        - cache：元组（dropout_param，mask）。在训练模式下，mask是用于乘以输入的dropout掩码；
+          在测试模式下，mask为None。
+        注意：p是drop神经元输出的概率，不是保留的概率
+        """
+        p, mode = dropout_param['p'], dropout_param['mode']
+        out, mask = None, None
 
-    # solver = Solver(model,data_dict,device = device,print_every=500,num_epochs = 100)
-    return solver
+        if mode == 'train':
+            # 可以对bool数组做除法操作，True为1
+            mask = (torch.rand(x.shape, device=x.device) > p) / (1 - p)  # 这里p是指丢掉的输出比例，所以大于p保留，除以1-p保持缩放
+            out = x * mask
+        elif mode == 'test':
+            out = x
+        cache = (dropout_param, mask)
 
+        return out, cache
 
-def get_three_layer_network_params():
-    weight_scale = 0.08
-    learning_rate = 0.5
-    return weight_scale, learning_rate
+    @staticmethod
+    def backward(dout, cache):
+        """
+        执行（反向）dropout的反向传播。
+        输入：
+        - dout：上游导数，任意形状的张量。
+        - cache：来自Dropout.forward的（dropout_param，mask）元组。
+        """
+        dropout_param, mask = cache
+        mode = dropout_param['mode']
 
+        dx = None
+        if mode == 'train':
+            dx = dout * mask
+        elif mode == 'test':
+            dx = dout
+        return dx
 
-def get_five_layer_network_params():
-    weight_scale = 0.15
-    learning_rate = 0.1
-    return weight_scale, learning_rate
 
 
 def sgd(w, dw, config=None):
@@ -590,8 +610,6 @@ def adam(w, dw, config=None):
     config.setdefault('v', torch.zeros_like(w))
     config.setdefault('t', 0)
 
-    next_w = None
-
     # 将更新后的w存储在next_w变量中。同时更新存储在config中的m、v和t变量。
     # 为了和Solver输出匹配，t要先修改
     # 公式见https://cs231n.github.io/neural-networks-3/#Adam
@@ -604,57 +622,10 @@ def adam(w, dw, config=None):
     config['v'] = beta2 * config['v'] + (1 - beta2) * (dw ** 2)
     vt = config['v'] / (1 - beta2 ** config['t'])
 
-    next_w = w
+    next_w = w  # in_place
     next_w -= config['learning_rate'] * mt / (vt.sqrt() + config['epsilon'])
 
     return next_w, config
 
 
-class Dropout(object):
 
-    @staticmethod
-    def forward(x, dropout_param):
-        """
-        执行（反向）dropout的前向传播。
-        输入：
-        - x：输入数据，任意形状的张量。
-        - dropout_param：包含以下键的字典：
-          - p：dropout参数。我们以概率p**丢弃**每个神经元的输出。
-          - mode：'test'或'train'。如果模式为'train'，则执行dropout；
-            如果模式为'test'，则只返回输入。
-        输出：
-        - out：与x形状相同的张量。
-        - cache：元组（dropout_param，mask）。在训练模式下，mask是用于乘以输入的dropout掩码；
-          在测试模式下，mask为None。
-        注意：p是drop神经元输出的概率，不是保留的概率
-        """
-        p, mode = dropout_param['p'], dropout_param['mode']
-        out, mask = None, None
-        
-        if mode == 'train':
-            # 可以对bool数组做除法操作，True为1
-            mask = (torch.rand(x.shape, device=x.device) > p) / (1 - p)  # 这里p是指丢掉的输出比例，所以大于p保留，除以1-p保持缩放
-            out = x * mask
-        elif mode == 'test':
-            out = x
-        cache = (dropout_param, mask)
-
-        return out, cache
-
-    @staticmethod
-    def backward(dout, cache):
-        """
-        执行（反向）dropout的反向传播。
-        输入：
-        - dout：上游导数，任意形状的张量。
-        - cache：来自Dropout.forward的（dropout_param，mask）元组。
-        """
-        dropout_param, mask = cache
-        mode = dropout_param['mode']
-
-        dx = None
-        if mode == 'train':
-            dx = dout * mask
-        elif mode == 'test':
-            dx = dout
-        return dx
