@@ -3,10 +3,158 @@ import time
 import torch
 import copy
 
+
+
+def sgd(w, dw, config=None):
+    """
+    Performs vanilla stochastic gradient descent.
+    config format:
+    - learning_rate: Scalar learning rate.
+    """
+    if config is None:
+        config = {}
+    config.setdefault('learning_rate', 1e-2)
+
+    w -= config['learning_rate'] * dw
+    return w, config
+
+
+def sgd_momentum(w, dw, config=None):
+    """
+    执行带动量的随机梯度下降优化算法。
+    配置格式：
+    - learning_rate：标量学习率。
+    - momentum：介于0和1之间的标量，表示动量值。将动量设置为0相当于使用普通的随机梯度下降（sgd）。
+    - velocity：与w和dw形状相同的NumPy数组，用于存储梯度的移动平均值。
+    """
+    if config is None:
+        config = {}
+    config.setdefault('learning_rate', 1e-2)
+    config.setdefault('momentum', 0.9)
+    #  获取了字典 config 中键为 'velocity' 的值，如果该键不存在，则返回一个与 w 相同形状的全零张量
+    v = config.get('velocity', torch.zeros_like(w))
+    next_w = None
+
+    # 动量更新。更新后的值存储在next_w中
+    v = config['momentum'] * v - config['learning_rate'] * dw
+    next_w = w + v  # ppt第二种更新方式
+    config['velocity'] = v
+
+    return next_w, config
+
+
+def rmsprop(w, dw, config=None):
+    """
+    使用RMSProp更新规则，该规则使用梯度平方的移动平均值来设置自适应的每个参数学习率。
+    配置格式：
+    - learning_rate：标量学习率。
+    - decay_rate：介于0和1之间的标量，表示梯度平方缓存的衰减率。
+    - epsilon：用于平滑处理的小标量，以避免除以零。
+    - cache：梯度二阶矩的移动平均。
+    """
+    if config is None:
+        config = {}
+    config.setdefault('learning_rate', 1e-2)
+    config.setdefault('decay_rate', 0.99)
+    config.setdefault('epsilon', 1e-8)
+    config.setdefault('cache', torch.zeros_like(w))
+
+    next_w = None
+    # 公式在ppt上
+    config['cache'] = config['decay_rate'] * config['cache'] + (1 - config['decay_rate']) * dw * dw
+    next_w = w  # in-place,非层类可以这么做
+    next_w -= config['learning_rate'] * dw / (config['cache'].sqrt() + config['epsilon'])
+    return next_w, config
+
+
+def adam(w, dw, config=None):
+    """
+    使用Adam更新规则，结合了梯度及其平方的移动平均值和偏差校正项。
+    配置格式：
+    - learning_rate：标量学习率。
+    - beta1：梯度一阶矩的移动平均衰减率。
+    - beta2：梯度二阶矩的移动平均衰减率。
+    - epsilon：用于平滑处理的小标量，以避免除以零。
+    - m：梯度的移动平均。
+    - v：梯度平方的移动平均。
+    - t：迭代次数。
+    """
+    if config is None:
+        config = {}
+    config.setdefault('learning_rate', 0.01)
+    config.setdefault('beta1', 0.9)
+    config.setdefault('beta2', 0.999)
+    config.setdefault('epsilon', 1e-8)
+    config.setdefault('m', torch.zeros_like(w))
+    config.setdefault('v', torch.zeros_like(w))
+    config.setdefault('t', 0)
+
+    # 将更新后的w存储在next_w变量中。同时更新存储在config中的m、v和t变量。
+    # 为了和Solver输出匹配，t要先修改
+    # 公式见https://cs231n.github.io/neural-networks-3/#Adam
+    config['t'] += 1
+    beta1, beta2 = config['beta1'], config['beta2']
+
+    config['m'] = beta1 * config['m'] + (1 - beta1) * dw
+    mt = config['m'] / (1 - beta1 ** config['t'])
+
+    config['v'] = beta2 * config['v'] + (1 - beta2) * (dw ** 2)
+    vt = config['v'] / (1 - beta2 ** config['t'])
+
+    next_w = w  # in_place
+    next_w -= config['learning_rate'] * mt / (vt.sqrt() + config['epsilon'])
+
+    return next_w, config
+
+
 class Solver(object):  # 求解器
     """
-
+    Solver是一个封装了训练分类模型工具的类。它默认执行随机梯度下降，并使用各种更新规则。
+    Solver能接收训练和验证的数据及其标签，能定期检查训练和验证数据的分类准确性，以防止过拟合。
+    
+    本项目中的模型都通过Solver训练。首先创建一个Solver实例，将模型、数据集以及各种参数（学习率、批量大小等）传递给构造器。
+    然后调用train()方法执行优化过程并训练模型。
+    
+    当train()方法执行完毕后，model.params将包含在训练过程中在验证集上表现最好的参数。(如果执行中被打断，则model.params存储距离当下最近的一次参数)
+    此外，实例变量solver.loss_history将包含在训练过程中遇到的所有损失，
+    而实例变量solver.train_acc_history和solver.val_acc_history将是模型在每个周期的训练集和验证集上的准确性列表。
+    
+    使用示例如下：
+    ```
+        data = {
+            'X_train': # 训练数据
+            'y_train': # 训练标签
+            'X_val': # 验证数据
+            'y_val': # 验证标签
+        }
+        model = MyNBPLUSModel(hidden_size=100, reg=10)
+        solver = Solver(model, data,
+                update_rule=sgd,
+                optim_config={
+                'learning_rate': 1e-3,
+                },
+                lr_decay=0.95,
+                num_epochs=10, batch_size=100,
+                print_every=100,
+                device='cuda')
+        solver.train()
+    ```
+    
+    Solver需要一个模型对象，该对象必须符合以下API：
+        - model.params必须是一个将字符串参数名映射到包含参数值的torch张量的字典。
+        - device：用于计算的设备，'cpu'或'cuda'。
+        - model.loss(X, y)必须是一个函数，该函数计算训练时的损失和梯度，以及测试时的分类得分，具有以下输入和输出：
+        输入:
+            X：给出输入数据的小批量的数组，形状为(N, d_1, ..., d_k)
+            y：给出标签的数组，形状为(N,)，其中y[i]是X[i]的标签。
+        返回值:
+            如果y为None，运行测试(推理)时的前向传播结果并返回：
+                scores：形状为(N, C)的数组，给出X的分类得分，其中scores[i, c]给出了X[i]的类别c的得分。
+            如果y不为None，运行训练时间的前向和反向传播并返回一个元组：
+                loss：给出损失的标量
+                grads：与self.params具有相同键的字典，将参数名称映射到相对于这些参数的损失的梯度。
     """
+
     def __init__(self, model, data, **kwargs):
         """
         构造求解器实例。
@@ -274,7 +422,7 @@ class Solver(object):  # 求解器
                             self.best_params[k] = v.clone()
                             try:
                                 self.best_bn_params = copy.deepcopy(self.model.bn_params)
-                                print("复制BN参数成功")
+
                             except AttributeError:
                                 pass
         #TODO 检查有效性

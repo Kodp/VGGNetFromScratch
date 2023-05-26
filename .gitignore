@@ -22,3 +22,5 @@ tran.pth
 vgg16_test.ipynb
 vgg19_test.ipynb
 
+mnist_5_25.pth
+net16_5_25_mini.pth

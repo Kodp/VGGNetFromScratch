@@ -1,6 +1,6 @@
 """
 注意:
-1. "层"类不可以改变输入数据(源数据)！ "层"类不可以改变输入数据(源数据)！ "层"类不可以改变输入数据(源数据)！
+1. "层"类除了BN层不可以改变输入数据(源数据)！
 
 原因:
 假设你正在使用一个神经网络进行训练，然后在ReLU层中，你决定不去克隆输入的数据`x`，而是直接在原数据上进行操作。
@@ -30,12 +30,7 @@ print(x)  # 输出：tensor([0, 2, 0, 4])
 
 """
 import torch
-from toolset.helper import softmax_loss
-from toolset.solver import Solver
-
-
-def hello_fully_connected_networks():
-    print('Hello from fully_connected_networks.py!')
+from toolset.helper import softmax_loss, svm_loss
 
 
 class Linear(object):
@@ -237,7 +232,7 @@ class TwoLayerNet(object):
         grads['b1'] = db1
         return loss, grads
 
-    # @ 这是不用函数手动计算loss的函数，主要用于回顾，同时还发现了一个bug
+    # @ 这是不用函数手动计算loss的函数，主要用于回顾，同时还发现了之前实现中的bug
     def loss_manual(self, X, y=None):
         """
         计算一个小批量数据的损失和梯度。
@@ -361,9 +356,6 @@ class FullyConnectedNet(object):
             weight_scale * torch.randn(hidden_dims[-1], num_classes, dtype=dtype, device=device)
         self.params['b' + str(cnt_hidden + 1)] = weight_scale * torch.zeros(num_classes, dtype=dtype, device=device)
 
-        #######################################################################
-        #                         END OF YOUR CODE                            #
-        #######################################################################
 
         # 当使用dropout时，我们需要向每个dropout层传递一个dropout_param字典，
         # 以便该层了解dropout的概率和模式（训练/测试）。可以将相同的dropout_param传递给每个dropout层。
@@ -523,109 +515,6 @@ class Dropout(object):
         elif mode == 'test':
             dx = dout
         return dx
-
-
-
-def sgd(w, dw, config=None):
-    """
-    Performs vanilla stochastic gradient descent.
-    config format:
-    - learning_rate: Scalar learning rate.
-    """
-    if config is None:
-        config = {}
-    config.setdefault('learning_rate', 1e-2)
-
-    w -= config['learning_rate'] * dw
-    return w, config
-
-
-def sgd_momentum(w, dw, config=None):
-    """
-    执行带动量的随机梯度下降优化算法。
-    配置格式：
-    - learning_rate：标量学习率。
-    - momentum：介于0和1之间的标量，表示动量值。将动量设置为0相当于使用普通的随机梯度下降（sgd）。
-    - velocity：与w和dw形状相同的NumPy数组，用于存储梯度的移动平均值。
-    """
-    if config is None:
-        config = {}
-    config.setdefault('learning_rate', 1e-2)
-    config.setdefault('momentum', 0.9)
-    #  获取了字典 config 中键为 'velocity' 的值，如果该键不存在，则返回一个与 w 相同形状的全零张量
-    v = config.get('velocity', torch.zeros_like(w))
-    next_w = None
-
-    # 动量更新。更新后的值存储在next_w中
-    v = config['momentum'] * v - config['learning_rate'] * dw
-    next_w = w + v  # ppt第二种更新方式
-    config['velocity'] = v
-
-    return next_w, config
-
-
-def rmsprop(w, dw, config=None):
-    """
-    使用RMSProp更新规则，该规则使用梯度平方的移动平均值来设置自适应的每个参数学习率。
-    配置格式：
-    - learning_rate：标量学习率。
-    - decay_rate：介于0和1之间的标量，表示梯度平方缓存的衰减率。
-    - epsilon：用于平滑处理的小标量，以避免除以零。
-    - cache：梯度二阶矩的移动平均。
-    """
-    if config is None:
-        config = {}
-    config.setdefault('learning_rate', 1e-2)
-    config.setdefault('decay_rate', 0.99)
-    config.setdefault('epsilon', 1e-8)
-    config.setdefault('cache', torch.zeros_like(w))
-
-    next_w = None
-    # 公式在ppt上
-    config['cache'] = config['decay_rate'] * config['cache'] + (1 - config['decay_rate']) * dw * dw
-    next_w = w  # in-place,非层类可以这么做
-    next_w -= config['learning_rate'] * dw / (config['cache'].sqrt() + config['epsilon'])
-    return next_w, config
-
-
-def adam(w, dw, config=None):
-    """
-    使用Adam更新规则，结合了梯度及其平方的移动平均值和偏差校正项。
-    配置格式：
-    - learning_rate：标量学习率。
-    - beta1：梯度一阶矩的移动平均衰减率。
-    - beta2：梯度二阶矩的移动平均衰减率。
-    - epsilon：用于平滑处理的小标量，以避免除以零。
-    - m：梯度的移动平均。
-    - v：梯度平方的移动平均。
-    - t：迭代次数。
-    """
-    if config is None:
-        config = {}
-    config.setdefault('learning_rate', 0.01)
-    config.setdefault('beta1', 0.9)
-    config.setdefault('beta2', 0.999)
-    config.setdefault('epsilon', 1e-8)
-    config.setdefault('m', torch.zeros_like(w))
-    config.setdefault('v', torch.zeros_like(w))
-    config.setdefault('t', 0)
-
-    # 将更新后的w存储在next_w变量中。同时更新存储在config中的m、v和t变量。
-    # 为了和Solver输出匹配，t要先修改
-    # 公式见https://cs231n.github.io/neural-networks-3/#Adam
-    config['t'] += 1
-    beta1, beta2 = config['beta1'], config['beta2']
-
-    config['m'] = beta1 * config['m'] + (1 - beta1) * dw
-    mt = config['m'] / (1 - beta1 ** config['t'])
-
-    config['v'] = beta2 * config['v'] + (1 - beta2) * (dw ** 2)
-    vt = config['v'] / (1 - beta2 ** config['t'])
-
-    next_w = w  # in_place
-    next_w -= config['learning_rate'] * mt / (vt.sqrt() + config['epsilon'])
-
-    return next_w, config
 
 
 

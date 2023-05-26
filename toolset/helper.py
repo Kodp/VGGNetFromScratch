@@ -1,6 +1,5 @@
 import torch
 import torchvision
-from toolset import utils
 from toolset import data
 import matplotlib.pyplot as plt
 import random
@@ -8,6 +7,8 @@ import math
 from toolset.solver import Solver
 from PIL import Image
 import torchvision.transforms as transforms
+import gc
+
 
 def pil_to_tensor(image: Image, image_type: str) -> torch.Tensor:
     if image_type == 'mnist':

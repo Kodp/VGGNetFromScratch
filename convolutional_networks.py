@@ -1,6 +1,6 @@
 """
 注意:
-1. "层"类不可以改变输入数据(源数据)！ "层"类不可以改变输入数据(源数据)！ "层"类不可以改变输入数据(源数据)！
+1. "层"类除了BN层不可以改变输入数据(源数据)！
 
 原因:
 假设你正在使用一个神经网络进行训练，然后在ReLU层中，你决定不去克隆输入的数据`x`，而是直接在原数据上进行操作。
@@ -32,7 +32,7 @@ print(x)  # 输出：tensor([0, 2, 0, 4])
 
 import torch
 from toolset.helper import softmax_loss
-from fully_connected_networks import Linear_ReLU, Linear, Solver, adam, ReLU, Dropout
+from fully_connected_networks import Linear_ReLU, Linear, ReLU, Dropout
 import math
 
 
@@ -144,9 +144,9 @@ class VggNet(object):
         # 5.初始化权重
         # 初始化卷积层
         for F in num_filters:
-            if isinstance(weight_scale, str): # kaiming初始化
+            if isinstance(weight_scale, str):  # kaiming初始化
                 self.params[f'W{layer}'] = kaiming_init(F, C, 3, ratio=ratio, dtype=dtype, device=device)
-            else: # 正态分布初始化
+            else:  # 正态分布初始化
                 self.params[f'W{layer}'] = weight_scale * torch.randn(F, C, 3, 3, dtype=dtype, device=device)
 
             self.params[f'b{layer}'] = torch.zeros(F, dtype=dtype, device=device)
@@ -160,7 +160,8 @@ class VggNet(object):
         # 初始化全连接层+预测层
         for fc in num_FC:
             if isinstance(weight_scale, str):
-                self.params[f'W{layer}'] = kaiming_init(C, fc, relu=layer != self.num_layers, ratio=ratio, dtype=dtype, device=device)
+                self.params[f'W{layer}'] = kaiming_init(C, fc, relu=layer != self.num_layers, ratio=ratio, dtype=dtype,
+                                                        device=device)
             else:
                 self.params[f'W{layer}'] = weight_scale * torch.randn(C, fc, dtype=dtype, device=device)
 
@@ -217,39 +218,6 @@ class VggNet(object):
             msg = f'param "{k}" has dtype {param.dtype}; should be {self.dtype}'
             # 使用断言语句来检查参数的数据类型是否正确。如果数据类型不正确，将抛出异常并显示上面构造的错误消息。
             assert param.dtype == self.dtype, msg
-
-    # def _scale_init(self, weight_scale, num_filters, num_FC, device):
-    #     """
-    #     对模型权重的参数进行正态分布初始化，可以进行缩放。
-    #     不要在类外部手动调用。
-    #
-    #     Args:
-    #         weight_scale: 缩放的系数
-    #         num_filters: 卷积层的数量
-    #         num_FC: 全连接层的数量
-    #         device: 权重应放的位置
-    #     """
-    #     dtype = self.dtype
-    #     C, H, W = self.input_dims
-    #     layer = 1  # 初始化层数计数器
-    #     for F in num_filters:
-    #         self.params[f'W{layer}'] = weight_scale * torch.randn(F, C, 3, 3, dtype=dtype, device=device)
-    #         self.params[f'b{layer}'] = torch.zeros(F, dtype=dtype, device=device)
-    #         self.params[f'gamma{layer}'] = torch.ones(F, dtype=dtype, device=device)
-    #         self.params[f'beta{layer}'] = torch.zeros(F, dtype=dtype, device=device)
-    #         C = F  # C为上一层的Channel
-    #         layer += 1
-    #
-    #     C = self.num_conv2fc  # 卷积层到全连接层的元素数量
-    #
-    #     for fc in num_FC:
-    #         self.params[f'W{layer}'] = weight_scale * torch.randn(C, fc, dtype=dtype, device=device)
-    #         self.params[f'b{layer}'] = torch.zeros(fc, dtype=dtype, device=device)
-    #         if layer != self.num_layers:
-    #             self.params[f'gamma{layer}'] = torch.ones(fc, dtype=dtype, device=device)
-    #             self.params[f'beta{layer}'] = torch.zeros(fc, dtype=dtype, device=device)
-    #         C = fc
-    #         layer += 1
 
     def check_loss(self, data_dict, num_samples=50, num_scores=10):
         """
@@ -345,7 +313,8 @@ class VggNet(object):
             gamma, beta = self.params[f'gamma{layer}'], self.params[f'beta{layer}']
             bn_param = self.bn_params[layer - 1]  # 引用传递
             if layer - 1 in self.max_poolset:  # set O(1) 查询
-                out, cache_dict[layer] = Conv_BatchNorm_ReLU_Pool.forward(out, W, b, gamma, beta,self.conv_param,bn_param,self.pool_param)
+                out, cache_dict[layer] = Conv_BatchNorm_ReLU_Pool.forward(out, W, b, gamma, beta, self.conv_param,
+                                                                          bn_param, self.pool_param)
                 # ! BatchNorm.forward会修改bn_param, 向里面添加running_mean和runing_var。
                 # 导致下一轮计算的时候，bn_param的running参数不为空则取出，但是这是上一层添加的running参数、shape是上一层的，所以和当层的x参数shape不匹配、出错。
                 # @ 但是如果每次传入的bn_param是每一层的bn_param，则正好同步修改，不会出现上述问题
@@ -399,7 +368,6 @@ class VggNet(object):
             grads[f'gamma{layer}'], grads[f'beta{layer}'] = dgamma, dbeta
 
         return loss, grads
-
 
 class Conv(object):
     @staticmethod
@@ -553,16 +521,225 @@ class MaxPool(object):
         return dx
 
 
-class ThreeLayerConvNet(object):
+class BatchNorm(object):
+
+    @staticmethod
+    def forward(x, gamma, beta, bn_param):
+        """
+        批量归一化的前向传播。
+
+        在训练过程中，从小批量统计中计算样本均值和（未校正的）样本方差，并用它们来归一化输入数据。
+        在训练过程中，我们还使用指数衰减的方式来维护每个特征的均值和方差的运行平均值，这些平均值用于在测试时归一化数据。
+
+        在每个时间步骤中，我们使用基于动量参数的指数衰减来更新均值和方差的运行平均值：
+
+        running_mean = momentum * running_mean + (1 - momentum) * sample_mean
+        running_var = momentum * running_var + (1 - momentum) * sample_var
+
+        注意，批量归一化论文建议在测试时使用不同的方法：它们使用大量训练图像来计算每个特征的样本均值和方差，而不是使用运行平均值。
+        对于这个实现，我们选择使用运行平均值，因为它们不需要额外的估计步骤；PyTorch中的批量归一化实现也使用运行平均值。
+
+        输入:
+        - x: 形状为（N，D）的数据
+        - gamma: 形状为（D，）的缩放参数
+        - beta: 形状为（D，）的平移参数
+        - bn_param: 字典，包含以下键:
+          - mode: 'train'或'test'；必需的
+          - eps: 数值稳定性的常数
+          - momentum: 运行均值/方差的常数。
+          - running_mean: 形状为（D，）的特征运行均值数组
+          - running_var: 形状为（D，）的特征运行方差数组
+
+        返回一个元组:
+        - out: 形状为（N，D）的输出
+        - cache: 反向传播过程中需要的值的元组
+        """
+
+        mode = bn_param['mode']
+        eps = bn_param.get('eps', 1e-5)
+        momentum = bn_param.get('momentum', 0.9)
+
+        N, D = x.shape
+        running_mean = bn_param.get('running_mean', torch.zeros(D, dtype=x.dtype, device=x.device))
+        running_var = bn_param.get('running_var', torch.zeros(D, dtype=x.dtype, device=x.device))
+
+        out, cache = None, None
+        if mode == 'train':
+            # Hint Lecture7 公式
+            # Hint running_mean,running_var计算在Train，用在Test，在Test不用再算
+            # sample_var, sample_mean = torch.var_mean(x, dim = 0)
+            # ! 巨坑，torch.var_mean的var是无偏估计，用的系数1/(N-1)，
+            # ! 不是我们这里用的1/N有偏, 不能用
+
+            mean = 1. / N * x.sum(dim=0)
+            var = 1. / N * ((x - mean) ** 2).sum(dim=0)
+
+            running_mean = momentum * running_mean + (1 - momentum) * mean
+            running_var = momentum * running_var + (1 - momentum) * var
+            rsqrt = 1. / (var + eps).sqrt()
+            x_hat = (x - mean) * rsqrt
+            out = gamma * x_hat + beta
+            cache = (x, x_hat, mean, var, gamma, rsqrt, eps)
+        elif mode == 'test':
+            out = gamma * ((x - running_mean) / (running_var + eps).sqrt()) + beta
+        else:
+            raise ValueError('Invalid forward batchnorm mode "%s"' % mode)
+
+        # 在PyTorch中，detach()方法用于创建一个新的张量，该张量与原始张量共享相同的底层数据，但不需要梯度。
+        # 换句话说，它将张量与计算图“分离”，因此在反向传播过程中不会通过此张量进行梯度信息的反向传播。
+        # 将更新后的运行均值存储回bn_param
+
+        # $ 修改源数据
+        bn_param['running_mean'] = running_mean.detach()
+        bn_param['running_var'] = running_var.detach()
+        return out, cache
+
+    @staticmethod
+    def backward(dout, cache):
+        """
+        批归一化的更快的反向传播方法。
+        输入/输出: 与batchnorm_backward相同
+        """
+        x, x_hat, mean, var, gamma, rsqrt, eps = cache
+        N, D = x.shape
+        dx_hat = gamma * dout
+        # 可以看稿纸，或者 https://kevinzakka.github.io/2016/09/14/batch_normalization/
+        dx = 1. / N * rsqrt * (N * dx_hat - dx_hat.sum(dim=0) - x_hat * (dx_hat * x_hat).sum(dim=0))  # 74字符除去空格
+        dgamma, dbeta = (x_hat * dout).sum(dim=0), dout.sum(dim=0)
+        return dx, dgamma, dbeta
+
+    @staticmethod
+    def backward_origin(dout, cache):
+        """
+        原始批归一化的反向传播。
+
+        输入:
+        - dout: 上游导数，形状为(N, D)
+        - cache: 从batchnorm_forward得到的中间变量
+
+        返回一个元组:
+        - dx: 相对于输入x的梯度，形状为(N, D)
+        - dgamma: 相对于缩放参数gamma的梯度，形状为(D,)
+        - dbeta: 相对于平移参数beta的梯度，形状为(D,)
+        """
+        dx, dgamma, dbeta = None, None, None
+        # original paper (https://arxiv.org/abs/1502.03167) 
+
+        # @ 读论文，这个实现不要求速度
+        x, x_hat, mean, var, gamma, rsqrt, eps = cache
+        N, D = x.shape
+        dx = torch.zeros_like(x)
+        # ! 一定要注意单位、设备相同，不然有误差
+        dsigma2, dmu = torch.zeros([D], dtype=dout.dtype, device=dout.device), torch.zeros([D], dtype=dout.dtype,
+                                                                                           device=dout.device)
+        # @ gamma和beta都是行向量，每一列对应一个
+        dgamma = (x_hat * dout).sum(dim=0)
+        dbeta = dout.sum(dim=0)
+        dx_hat = gamma * dout
+
+        # # 向量化
+        dsigma2 = 0.5 * ((var + eps) ** (-1.5)) * (dx_hat * (mean - x)).sum(dim=0)
+        dmu = -rsqrt * dx_hat.sum(dim=0) + dsigma2 * (-2 / N) * (x - mean).sum(dim=0)
+        dx = dx_hat * rsqrt + dsigma2 * (2. / N) * (x - mean) + 1. / N * dmu
+
+        # 来自纸上推导
+        return dx, dgamma, dbeta
+
+
+class SpatialBatchNorm(object):
+    @staticmethod
+    def forward(x, gamma, beta, bn_param):
+        """
+        计算空间批归一化的前向传播。
+
+        输入:
+        - x: 输入数据，形状为(N, C, H, W)
+        - gamma: 缩放参数，形状为(C,)
+        - beta: 平移参数，形状为(C,)
+        - bn_param: 字典，包含以下键值:
+        - mode: 'train' 或 'test'；必需
+        - eps: 数值稳定性的常数
+        - momentum: 运行均值/方差的常数。momentum=0 表示旧信息在每个时间步骤完全丢弃，而 momentum=1 表示不会合并新信息。默认的 momentum=0.9 在大多数情况下效果很好。
+        - running_mean: 形状为(C,)的数组，给出特征的运行均值
+        - running_var: 形状为(C,)的数组，给出特征的运行方差
+
+        返回一个元组:
+        - out: 输出数据，形状为(N, C, H, W)
+        - cache: 反向传播所需的值
+        """
+        N, C, H, W = x.shape
+        out, cache = BatchNorm.forward(x.reshape(-1, C), gamma, beta, bn_param)  # out.shape == x.shape
+        out = out.reshape(N, C, H, W)
+        return out, cache
+
+    @staticmethod
+    def backward(dout, cache):
+        """
+        计算空间批归一化的反向传播。
+
+        输入:
+        - dout: 上游导数，形状为(N, C, H, W)
+        - cache: 前向传播过程中的值
+
+        返回一个元组:
+        - dx: 相对于输入的梯度，形状为(N, C, H, W)
+        - dgamma: 相对于缩放参数的梯度，形状为(C,)
+        - dbeta: 相对于平移参数的梯度，形状为(C,)
+        """
+        dx, dgamma, dbeta = None, None, None
+
+        N, C, H, W = dout.shape
+        dx, dgamma, dbeta = BatchNorm.backward(dout.view(-1, C), cache)
+        dx = dx.view(N, C, H, W)
+
+        return dx, dgamma, dbeta
+
+
+class ManualConv_ReLU_Pool(object):
+
+    @staticmethod
+    def forward(x, w, b, conv_param, pool_param):
+        """
+        执行卷积，ReLU和池化。
+        输入:
+        - x: 卷积层的输入
+        - w, b, conv_param: 卷积层的权重和参数
+        - pool_param: 池化层的参数
+        返回一个元组:
+        - out: 池化层的输出
+        - cache: 用于反向传播的对象
+        """
+        a, conv_cache = Conv.forward(x, w, b, conv_param)
+        s, relu_cache = ReLU.forward(a)
+        out, pool_cache = MaxPool.forward(s, pool_param)
+        cache = (conv_cache, relu_cache, pool_cache)
+        return out, cache
+
+    @staticmethod
+    def backward(dout, cache):
+        """
+        反向传播计算梯度
+        """
+        conv_cache, relu_cache, pool_cache = cache
+        ds = MaxPool.backward(dout, pool_cache)
+        da = ReLU.backward(ds, relu_cache)
+        dx, dw, db = Conv.backward(da, conv_cache)
+        return dx, dw, db
+
+
+class ManualThreeLayerConvNet(object):
     """
-    具有以下结构的三层卷积网络：
+    不使用任何torch的高级特性、只使用矩阵计算和广播完成的三层卷积神经网络。
+    所有用到的层类在`fully_connected_networks.py`中已实现。手写了正向和反向传播。
+    
+    结构如下:
     conv - relu - 2x2最大池化 - linear - relu - linear - softmax
     该网络对具有形状(N, C, H, W)的数据进行操作，其中N表示图像数量，H和W表示每个图像的高度和宽度，C表示输入通道数。
     """
 
     def __init__(self,
                  input_dims=(3, 32, 32),
-                 num_filters=32,
+                 num_filters=8,
                  filter_size=7,
                  hidden_dim=100,
                  num_classes=10,
@@ -643,7 +820,7 @@ class ThreeLayerConvNet(object):
 
         # HINT: conv - relu - 2x2 max pool - linear - relu - linear - softmax
         cache_dict = {}
-        scores, cache_dict['CRP'] = Conv_ReLU_Pool.forward(X, W1, b1, conv_param, pool_param)
+        scores, cache_dict['CRP'] = ManualConv_ReLU_Pool.forward(X, W1, b1, conv_param, pool_param)
         scores, cache_dict['LR'] = Linear_ReLU.forward(scores, W2, b2)
         scores, cache_dict['L'] = Linear.forward(scores, W3, b3)
         if y is None:
@@ -657,7 +834,7 @@ class ThreeLayerConvNet(object):
         grads['W3'], grads['b3'] = dw + 2 * self.reg * W3, db
         dout, dw, db = Linear_ReLU.backward(dout, cache_dict['LR'])
         grads['W2'], grads['b2'] = dw + 2 * self.reg * W2, db
-        dout, dw, db = Conv_ReLU_Pool.backward(dout, cache_dict['CRP'])
+        dout, dw, db = ManualConv_ReLU_Pool.backward(dout, cache_dict['CRP'])
         grads['W1'], grads['b1'] = dw + 2 * self.reg * W1, db
 
         return loss, grads
@@ -898,39 +1075,6 @@ class DeepConvNet(object):
         return loss, grads
 
 
-def find_overfit_parameters():
-    weight_scale = 0.1
-    # ! Naive初始化初值敏感性太高了，weightscale设成1e-4准确率动都不带动的
-    learning_rate = 0.001
-    return weight_scale, learning_rate
-
-
-def create_convolutional_solver_instance(data_dict, dtype, device):
-    model = None
-    solver = None
-    input_dims = data_dict['X_train'].shape[1:]
-    weight_scale = 'kaiming'
-
-    model = DeepConvNet(input_dims=input_dims, num_classes=10,
-                        num_filters=([32] * 2) + ([64] * 2) + ([128] * 1),
-                        max_pools=[1, 3, 4],
-                        weight_scale=weight_scale,
-                        reg=1e-5,
-                        dtype=torch.float32,
-                        device='cuda'
-                        )
-    solver = Solver(model, data_dict,
-                    num_epochs=100, batch_size=128,
-                    update_rule=adam,
-                    optim_config={
-                        'learning_rate': 0.002,
-                    },
-                    # lr_decay = 0.95,
-                    print_every=50, device='cuda')
-    # solver帮你实现了batch_size,不过不是cuda友好类型
-    return solver
-
-
 def kaiming_init(Din, Dout, K=None, relu=True, ratio=1., device='cpu',
                  dtype=torch.float32):
     """
@@ -965,180 +1109,6 @@ def kaiming_init(Din, Dout, K=None, relu=True, ratio=1., device='cpu',
         weight = torch.randn(Din, Dout, K, K, dtype=dtype, device=device) * std * ratio
 
     return weight
-
-
-class BatchNorm(object):
-
-    @staticmethod
-    def forward(x, gamma, beta, bn_param):
-        """
-        批量归一化的前向传播。
-
-        在训练过程中，从小批量统计中计算样本均值和（未校正的）样本方差，并用它们来归一化输入数据。
-        在训练过程中，我们还使用指数衰减的方式来维护每个特征的均值和方差的运行平均值，这些平均值用于在测试时归一化数据。
-
-        在每个时间步骤中，我们使用基于动量参数的指数衰减来更新均值和方差的运行平均值：
-
-        running_mean = momentum * running_mean + (1 - momentum) * sample_mean
-        running_var = momentum * running_var + (1 - momentum) * sample_var
-
-        注意，批量归一化论文建议在测试时使用不同的方法：它们使用大量训练图像来计算每个特征的样本均值和方差，而不是使用运行平均值。
-        对于这个实现，我们选择使用运行平均值，因为它们不需要额外的估计步骤；PyTorch中的批量归一化实现也使用运行平均值。
-
-        输入:
-        - x: 形状为（N，D）的数据
-        - gamma: 形状为（D，）的缩放参数
-        - beta: 形状为（D，）的平移参数
-        - bn_param: 字典，包含以下键:
-          - mode: 'train'或'test'；必需的
-          - eps: 数值稳定性的常数
-          - momentum: 运行均值/方差的常数。
-          - running_mean: 形状为（D，）的特征运行均值数组
-          - running_var: 形状为（D，）的特征运行方差数组
-
-        返回一个元组:
-        - out: 形状为（N，D）的输出
-        - cache: 反向传播过程中需要的值的元组
-        """
-
-        mode = bn_param['mode']
-        eps = bn_param.get('eps', 1e-5)
-        momentum = bn_param.get('momentum', 0.9)
-
-        N, D = x.shape
-        running_mean = bn_param.get('running_mean', torch.zeros(D, dtype=x.dtype, device=x.device))
-        running_var = bn_param.get('running_var', torch.zeros(D, dtype=x.dtype, device=x.device))
-
-        out, cache = None, None
-        if mode == 'train':
-            # Hint Lecture7 公式
-            # Hint running_mean,running_var计算在Train，用在Test，在Test不用再算
-            # sample_var, sample_mean = torch.var_mean(x, dim = 0)
-            # ! 巨坑，torch.var_mean的var是无偏估计，用的系数1/(N-1)，
-            # ! 不是我们这里用的1/N有偏, 不能用
-
-            mean = 1. / N * x.sum(dim=0)
-            var = 1. / N * ((x - mean) ** 2).sum(dim=0)
-
-            running_mean = momentum * running_mean + (1 - momentum) * mean
-            running_var = momentum * running_var + (1 - momentum) * var
-            rsqrt = 1. / (var + eps).sqrt()
-            x_hat = (x - mean) * rsqrt
-            out = gamma * x_hat + beta
-            cache = (x, x_hat, mean, var, gamma, rsqrt, eps)
-        elif mode == 'test':
-            out = gamma * ((x - running_mean) / (running_var + eps).sqrt()) + beta
-        else:
-            raise ValueError('Invalid forward batchnorm mode "%s"' % mode)
-
-        # 在PyTorch中，detach()方法用于创建一个新的张量，该张量与原始张量共享相同的底层数据，但不需要梯度。
-        # 换句话说，它将张量与计算图“分离”，因此在反向传播过程中不会通过此张量进行梯度信息的反向传播。
-        # 将更新后的运行均值存储回bn_param
-
-        # $ 修改源数据
-        bn_param['running_mean'] = running_mean.detach()
-        bn_param['running_var'] = running_var.detach()
-        return out, cache
-
-    @staticmethod
-    def backward(dout, cache):
-        """
-        批归一化的更快的反向传播方法。
-        输入/输出: 与batchnorm_backward相同
-        """
-        x, x_hat, mean, var, gamma, rsqrt, eps = cache
-        N, D = x.shape
-        dx_hat = gamma * dout
-        # 可以看稿纸，或者 https://kevinzakka.github.io/2016/09/14/batch_normalization/
-        dx = 1. / N * rsqrt * (N * dx_hat - dx_hat.sum(dim=0) - x_hat * (dx_hat * x_hat).sum(dim=0))  # 74字符除去空格
-        dgamma, dbeta = (x_hat * dout).sum(dim=0), dout.sum(dim=0)
-        return dx, dgamma, dbeta
-
-    @staticmethod
-    def backward_origin(dout, cache):
-        """
-        原始批归一化的反向传播。
-
-        输入:
-        - dout: 上游导数，形状为(N, D)
-        - cache: 从batchnorm_forward得到的中间变量
-
-        返回一个元组:
-        - dx: 相对于输入x的梯度，形状为(N, D)
-        - dgamma: 相对于缩放参数gamma的梯度，形状为(D,)
-        - dbeta: 相对于平移参数beta的梯度，形状为(D,)
-        """
-        dx, dgamma, dbeta = None, None, None
-        # original paper (https://arxiv.org/abs/1502.03167) 
-
-        # @ 读论文，这个实现不要求速度
-        x, x_hat, mean, var, gamma, rsqrt, eps = cache
-        N, D = x.shape
-        dx = torch.zeros_like(x)
-        # ! 一定要注意单位、设备相同，不然有误差
-        dsigma2, dmu = torch.zeros([D], dtype=dout.dtype, device=dout.device), torch.zeros([D], dtype=dout.dtype,
-                                                                                           device=dout.device)
-        # @ gamma和beta都是行向量，每一列对应一个
-        dgamma = (x_hat * dout).sum(dim=0)
-        dbeta = dout.sum(dim=0)
-        dx_hat = gamma * dout
-
-        # # 向量化
-        dsigma2 = 0.5 * ((var + eps) ** (-1.5)) * (dx_hat * (mean - x)).sum(dim=0)
-        dmu = -rsqrt * dx_hat.sum(dim=0) + dsigma2 * (-2 / N) * (x - mean).sum(dim=0)
-        dx = dx_hat * rsqrt + dsigma2 * (2. / N) * (x - mean) + 1. / N * dmu
-
-        # 来自纸上推导
-        return dx, dgamma, dbeta
-
-
-class SpatialBatchNorm(object):
-    @staticmethod
-    def forward(x, gamma, beta, bn_param):
-        """
-        计算空间批归一化的前向传播。
-
-        输入:
-        - x: 输入数据，形状为(N, C, H, W)
-        - gamma: 缩放参数，形状为(C,)
-        - beta: 平移参数，形状为(C,)
-        - bn_param: 字典，包含以下键值:
-        - mode: 'train' 或 'test'；必需
-        - eps: 数值稳定性的常数
-        - momentum: 运行均值/方差的常数。momentum=0 表示旧信息在每个时间步骤完全丢弃，而 momentum=1 表示不会合并新信息。默认的 momentum=0.9 在大多数情况下效果很好。
-        - running_mean: 形状为(C,)的数组，给出特征的运行均值
-        - running_var: 形状为(C,)的数组，给出特征的运行方差
-
-        返回一个元组:
-        - out: 输出数据，形状为(N, C, H, W)
-        - cache: 反向传播所需的值
-        """
-        N, C, H, W = x.shape
-        out, cache = BatchNorm.forward(x.reshape(-1, C), gamma, beta, bn_param)  # out.shape == x.shape
-        out = out.reshape(N, C, H, W)
-        return out, cache
-
-    @staticmethod
-    def backward(dout, cache):
-        """
-        计算空间批归一化的反向传播。
-
-        输入:
-        - dout: 上游导数，形状为(N, C, H, W)
-        - cache: 前向传播过程中的值
-
-        返回一个元组:
-        - dx: 相对于输入的梯度，形状为(N, C, H, W)
-        - dgamma: 相对于缩放参数的梯度，形状为(C,)
-        - dbeta: 相对于平移参数的梯度，形状为(C,)
-        """
-        dx, dgamma, dbeta = None, None, None
-
-        N, C, H, W = dout.shape
-        dx, dgamma, dbeta = BatchNorm.backward(dout.view(-1, C), cache)
-        dx = dx.view(N, C, H, W)
-
-        return dx, dgamma, dbeta
 
 
 # 用torch的快速实现

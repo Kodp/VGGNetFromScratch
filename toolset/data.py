@@ -8,47 +8,6 @@ import torchvision.transforms as transforms
 from toolset import utils
 import matplotlib.pyplot as plt
 
-def tensor_to_imggrid_show(X) ->list:
-    classes = ["plane", "car", "bird", "cat", "deer", "dog", "frog", "horse", "ship", "truck"]
-    
-    inverse_norm = transforms.Compose(
-        [
-            transforms.Normalize(mean=[0., 0., 0.], std=[1 / 0.4914, 1 / 0.4822, 1 / 0.4465]),
-            transforms.Normalize(mean=[-0.247, -0.243, -0.261], std=[1., 1., 1.]),
-        ]
-    )
-    
-    utils.reset_seed(0)
-    N = X.shape[0]
-    
-    img = torchvision.utils.make_grid(X, nrow=N)
-    img = inverse_norm(img)
-    plt.axis("off")
-    plt.imshow(utils.tensor_to_image(img))
-    plt.show()
-    return
-
-    for cls, name in enumerate(classes):
-        # 手工调试，让classes name 处于一个较好的位置
-        plt.text(-4, 34 * cls + 18, name, ha="right")  # ha=right让文字右对齐
-        # @ 获取y_train中分类是cls的所有样本的下标（沿着N）
-        # (y_train == cls) 返回一个布尔张量，元素值为 True 的位置对应 `y_train` 中等于 `cls` 的元素
-        # .nonzero(as_tuple=True) 函数会返回一个包裹张量的元组，包含y_train的维度个张量（这里是1个），
-        # 其中张量的值对应输入中非零元素（即布尔张量中为 True 的元素）的索引。
-        # (idxs, ) 则将这个元组解包，得到一个包含所有 `y_train` 中等于 `cls` 的元素的索引的张量, shape (k, ), k<=N
-        (idxs,) = (y == cls).nonzero(as_tuple=True)
-        # 抽取sample_per_class个图片放入samples
-        for _ in range(sample_per_class):
-            idx = idxs[random.randrange(idxs.shape[0])].item()  # 随机抽取一个idx
-            samples.append(X[idx])
-    # 让多张tensor图片合并为一张tensor图片，以grid的形式展现
-    img = torchvision.utils.make_grid(samples, nrow=sample_per_class)  # nrow是一行展示的图片数量
-    # plt绘图，使用image格式((H, W, 3)的ndarray)
-    plt.imshow(utils.tensor_to_image(img))
-    plt.axis("off")
-    plt.show()
-
-    
 
 def _extract_tensors(dset, num=None, x_dtype=torch.float32) -> Tuple[torch.Tensor, torch.Tensor]:
     """
@@ -226,3 +185,25 @@ def preprocess_cifar10(
                  'y_test': y_test}
 
     return data_dict
+
+
+
+def tensor_to_imggrid_show(X) ->list:
+    classes = ["plane", "car", "bird", "cat", "deer", "dog", "frog", "horse", "ship", "truck"]
+    
+    inverse_norm = transforms.Compose(
+        [
+            transforms.Normalize(mean=[0., 0., 0.], std=[1 / 0.4914, 1 / 0.4822, 1 / 0.4465]),
+            transforms.Normalize(mean=[-0.247, -0.243, -0.261], std=[1., 1., 1.]),
+        ]
+    )
+    
+    utils.reset_seed(0)
+    N = X.shape[0]
+    
+    img = torchvision.utils.make_grid(X, nrow=N)
+    img = inverse_norm(img)
+    plt.axis("off")
+    plt.imshow(utils.tensor_to_image(img))
+    plt.show()
+    return
