@@ -1,6 +1,6 @@
 # ConvNetFromScratch
 
-![123](toolset\Convnet.png)
+![123](toolset/Convnet.png)
 
 使用纯torch函数复现卷积神经网络。No torch.nn!(除了最后一个VGGNet以外)
 
