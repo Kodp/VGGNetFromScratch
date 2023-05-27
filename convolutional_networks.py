@@ -33,8 +33,8 @@ print(x)  # 输出：tensor([0, 2, 0, 4])
 import torch
 from toolset.helper import softmax_loss
 from fully_connected_networks import Linear_ReLU, Linear, ReLU, Dropout
-import math
-
+from torch import Tensor
+from typing import Dict, List, Optional, Tuple
 
 class VggNet(object):
     """
@@ -369,7 +369,8 @@ class VggNet(object):
 
         return loss, grads
 
-class Conv(object):
+
+class ConvVanilla(object):
     @staticmethod
     def forward(x, w, b, conv_param):
         """
@@ -453,8 +454,7 @@ class Conv(object):
 
         return dx, dw, db
 
-
-class MaxPool(object):
+class MaxPoolVanilla(object):
 
     @staticmethod
     def forward(x, pool_param):
@@ -519,6 +519,159 @@ class MaxPool(object):
                         dx[p_i, c_i, id + row, jd + col] += dout[p_i, c_i, i, j]
 
         return dx
+
+
+
+class Conv(object):
+    @staticmethod
+    def forward(x:Tensor, w:Tensor, b:Tensor, conv_param: dict) -> Tuple[Tensor, Tuple[Tensor,Tensor,Tensor,Tensor,Dict]]: 
+        """
+        卷积层前向传播的高速实现。
+        对输入张量执行2d卷积的函数。
+        Args:
+            x: (Tensor): 输入张量，形状为 (N, C, H, W)，其中N为批大小，C为通道数，H为图像高度，W为图像宽度。
+            w: (Tensor): 卷积层的权重（即“滤波器”），形状为 (F, C, I, J)，其中F为滤波器数量，I,J代表滤波器的高度和宽度。 
+                这里不采用HH，WW是为了配合einsum下标。
+            b: (Tensor): 每个卷积核的偏置项。这是一个长度为F的一维张量(F,)。
+            conv_param (dict): 一个具有两个键'stride'和'pad'的字典，表示在卷积操作中要使用的步长和填充。
+        Return:
+            Tensor: 卷积操作的输出。
+            Tuple: 计算过程的cache元组，(x, w, b, conv_param)。
+        """
+        stride, pad = conv_param['stride'], conv_param['pad']
+        N, C, H, W = x.shape
+        F, C, I, J = w.shape  # I,J为卷积核大小
+        # 填充
+        if pad != 0:
+            x_padded = torch.zeros(N, C, H + 2 * pad, W + 2 * pad, dtype=x.dtype, device=x.device)
+            x_padded[:, :, pad:-pad, pad:-pad] = x
+        else:
+            x_padded = x
+        # 不需要手动计算H_out，W_out，下面einsum中用h，w代替
+        x_conv = x_padded.unfold(2, I, stride).unfold(3, J, stride)  #@ NChwIJ 展开成为卷积的形式 
+        # 'NChwIJ,FCIJ->NFhw'等式表示我们沿着高度和宽度维度（IJ）将输入窗口和滤波器进行点积，并沿输入通道（C）求和。
+        out = torch.einsum('NChwIJ,FCIJ->NFhw', x_conv, w)  # (N,F,H_out,W_out)
+        
+        out += b.reshape(1, -1, 1, 1)
+        return out, (x, x_conv, w, b, conv_param)
+    
+    @staticmethod 
+    def backward(dout:Tensor, cache:Tuple[Tensor,Tensor,Tensor,Tensor,Dict]):
+        """
+        卷积层反向传播的高速实现。
+        输入：
+        - dout：上游导数。 形状为 (N, F, h, w) 或者 (N, F, H_out, W_out) 
+        - cache：与conv_forward_naive中的(x, w, b, conv_param)相同的元组。
+
+        返回一个元组：
+        - dx：相对于x的梯度
+        - dw：相对于w的梯度
+        - db：相对于b的梯度
+        """
+        
+        x, x_conv,  W, _, conv_param = cache  # x是原始x(NCHW)
+        F, C, I, J = W.shape
+        stride, pad = conv_param['stride'], conv_param['pad']
+        # 计算db
+        db = dout.sum(dim=(0,2,3))  # (F,)
+        # 计算dw
+        dw = torch.einsum('NFhw,NChwIJ->FCIJ', dout, x_conv)  # 不能将NFhw,NChwIJ调换顺序
+        # 计算dx
+        w_mat = W.reshape(F, C*I*J).T  # (F,C,I,J)->(F,CIJ)->(CIJ,F)=(A,F)
+        NAhw = torch.einsum('AF,NFhw->NAhw', w_mat, dout) 
+        # 这里和前面的惯用顺序不同，y=Wx，所以 dL/dx=w.T*dout
+        dx = Conv.NAhw2NCHW(NAhw, x.shape, I, J, stride, pad)  
+        if pad != 0:
+            dx = dx[:, :, pad:-pad, pad:-pad]
+        # dx = torch.nn.grad.conv2d_input(x.shape, w, dout, stride=stride, padding=pad)  # 正确的代码，但使用nn
+        return dx, dw, db  
+    
+    @staticmethod
+    def NAhw2NCHW(NAhw:Tensor, x_origin_shape, I, J, stride=1, pad=0) -> Tensor:
+        """
+        参数:
+            NAhw (torch.Tensor): NAhw格式张量，形状 (N, CIJ, h_out, w_out)
+            x_shape (tuple): 原始输入张量的形状，(N, C, H, W)
+            I, J (int): 卷积核的高度和宽度
+            stride (int): 卷积核的步长，默认为1
+        返回:
+            torch.Tensor: 张量，形状 (N, C, H, W)
+        """
+        N, C, H, W = x_origin_shape  # 原始x_shape
+        h_out = 1 + (H + 2 * pad - I) // stride 
+        w_out = 1 + (W + 2 * pad - J) // stride 
+        
+        # 创建一个形状和x_padded张量相同的全零张量
+        out = torch.zeros(N, C, H + 2 * pad, W + 2 * pad, dtype=NAhw.dtype,device=NAhw.device)
+        NChwIJ = NAhw.reshape(N, C, I, J, h_out, w_out).permute(0, 1, 4, 5, 2, 3)  # NChwIJ
+        # 遍历卷积核的每一个元素，恢复原始输入张量
+        for top in range(I):
+            down = top + h_out * stride
+            for left in range(J):
+                right = left + w_out * stride
+                out[:, :, top:down:stride, left:right:stride] += NChwIJ[:, :, :, :, top, left]
+        return out
+
+
+class MaxPool(object):
+
+    @staticmethod
+    def forward(x:Tensor, pool_param):
+        """
+        最大池化层前向传播的朴素实现。
+
+        输入：
+        - x：输入数据，形状为(N, C, H, W)
+        - pool_param：字典，包含以下键：
+        - 'pool_height'：每个池化区域的高度
+        - 'pool_width'：每个池化区域的宽度
+        - 'stride'：相邻池化区域之间的距离
+        这里不需要填充。
+
+        返回一个元组：
+        - out：形状为(N, C, H', W')的输出，其中H'和W'由以下公式给出：
+        H' = 1 + (H - pool_height) / stride
+        W' = 1 + (W - pool_width) / stride
+        - cache：(x, pool_param)
+        """
+        N, C, H, W = x.shape
+        ph, pw, stride = pool_param['pool_height'], pool_param['pool_width'], pool_param['stride']
+        H_out, W_out = 1 + (H - ph) // stride, 1 + (W - pw) // stride
+        out = torch.zeros(N, C, H_out, W_out, dtype=x.dtype, device=x.device)
+
+        x_conv = x.unfold(2, ph, stride).unfold(3, pw, stride)  #@ (N,C,H,W)->(N,C,h,w,ph,pw)
+        x_colvectorized = x_conv.permute(0, 1, 4, 5, 2, 3).reshape(N, C,ph*pw, -1)   # (N,C,ph,pw,h,w)->(N,C,phpw,hw)
+        x_col_value, x_col_idx = x_colvectorized.max(dim = 2)  # (N,C,hw)
+        out = x_col_value.reshape(N, C, H_out, W_out)  # (N,C,hw)->(N,C,h,w)
+        cache = (x.shape, x_col_idx, x_colvectorized, pool_param)
+        return out, cache
+
+    @staticmethod
+    def backward(dout:Tensor, cache:Tuple[Tuple,Tensor,Tensor,Dict]):
+        """
+        最大池化层反向传播的朴素实现。
+        输入：
+        - dout：上游导数
+        - cache：与前向传播中的(x, pool_param)相同的元组。
+        返回：
+        - dx：相对于x的梯度
+        """
+        x_shape, x_col_idx, x_colvectorized, pool_param = cache  # x_col_idx : (N,C,hw)
+        N, C, H, W = x_shape
+        ph, pw, stride = pool_param['pool_height'], pool_param['pool_width'], pool_param['stride']
+        H_out, W_out = 1 + (H - ph) // stride, 1 + (W - pw) // stride
+        x_colvectorized.zero_().scatter_(2, x_col_idx.unsqueeze(2), 1)  #? why  (N,C,phpw,hw)=(N,C,A,B)
+        
+        dout_reshape = dout.reshape(N,C,-1)  # (N,C,B)
+        tmp = torch.einsum('NCB,NCAB->NCAB',dout_reshape,x_colvectorized).reshape(N, C, ph, pw, H_out, W_out).permute(0, 1, 4, 5, 2, 3)
+        dx = torch.zeros(size=x_shape,dtype=x_colvectorized.dtype,device=x_colvectorized.device)  # (N,C,H,W)
+        for top in range(ph):
+            down = top + H_out * stride
+            for left in range(pw):
+                right = left + W_out * stride
+                dx[:, :, top:down:stride, left:right:stride] += tmp[:, :, :, :, top, left]
+        return dx
+     
 
 
 class BatchNorm(object):

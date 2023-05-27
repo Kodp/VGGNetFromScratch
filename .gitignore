@@ -24,3 +24,8 @@ vgg19_test.ipynb
 
 mnist_5_25.pth
 net16_5_25_mini.pth
+
+mnist_5_27.pth
+
+einsum_ex/
+test_conv - 副本.ipynb
