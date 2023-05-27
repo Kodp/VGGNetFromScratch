@@ -2,7 +2,7 @@
 
 ![123](toolset/Convnet.png)
 
-使用纯torch函数复现卷积神经网络。No torch.nn!(除了最后一个VGGNet以外)
+使用纯torch函数复现卷积神经网络。**No torch.nn!**(除了最后一个VGGNet)
 
 实现了以下功能:
 
