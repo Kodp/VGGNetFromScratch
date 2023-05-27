@@ -1,11 +1,13 @@
-# VGGNetFromScratch
+# ConvNetFromScratch
 
-仅使用torch的矩阵计算功能复现VGG19。
+![123](toolset\Convnet.png)
+
+使用纯torch函数复现卷积神经网络。No torch.nn!(除了最后一个VGGNet以外)
 
 实现了以下功能:
 
 - 自定义全连接层
-- 自定义卷积层
+- 自定义普通卷积层、高速卷积层
 - 所有层的正向传播和反向传播
 - 梯度更新
 - 多种优化器(SGD，SGDMomentum，RMSprop，Adam)
