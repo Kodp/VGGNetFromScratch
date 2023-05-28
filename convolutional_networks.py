@@ -38,9 +38,12 @@ from typing import Dict, List, Optional, Tuple
 
 class VggNet(object):
     """
-    VggNet结构，可自定义任意数量卷积层的卷积神经网络，之后连接任意数量的全连接层(在Vgg中是3层)。
+    
+    VggNet风格的可自定义任意数量卷积层的卷积神经网络，之后连接任意数量的全连接层(在Vgg中是3层)。
+    
+    该类中需要的所有层均已手动实现(正向、反向传播)，并且有较好的性能。
 
-    所有卷积层将使用3x3的卷积核和填充1来保持特征图的大小，通俗来说就是卷积之后宽高不变。(F1,H,W)->(F2,H,W)
+    Vgg风格是所有卷积层将使用3x3的卷积核和填充1来保持特征图的大小，通俗来说就是卷积之后宽高不变。(F1,H,W)->(F2,H,W)
     所有池化层将是2x2的最大池化层，并且步幅为2，即每次减半特征图的大小。 (F,H,W)->(F,H/2,W/2)
 
     网络的架构如下所示：
@@ -53,8 +56,7 @@ class VggNet(object):
 
     该网络对形状为(N, C, H, W)的数据小批量进行操作，其中N是图像数量，H和W分别是图像的高度和宽度，C是输入通道数。
 
-    在该工程中，所有层的正向、方向传播均已实现，包含全连接、ReLu、BN、Dropout、卷积。
-    也就是说网络可以用在这个工程文件里的所有层构成，完全不需要torch.nn。但是由于手写卷积的速度较慢，所以卷积在在这里采用了torch.nn。
+   
 
     * 注意，参数不要用列表这种mutable对象。因为默认参数可能被永久改变导致错误:
         def func(key, value, a={}):
@@ -89,6 +91,7 @@ class VggNet(object):
         - num_filters：长度为 (L - 1) 的元组，给出每个宏层中要使用的卷积滤波器的数量
         - max_pools：一个整数元组，给出应该具有最大池化的宏层的索引（从零开始）
         - num_FC：一个整数元组，表示整个卷积层之后的FC层的层数和每层的神经元个数，元组最后一个值应是分类数num_classes
+        - dropout：[0,1]之间的浮点数，表示前向传播中丢弃神经元的概率。
         - weight_scale：标量，给出权重随机初始化的标准差，或者使用字符串 "kaiming" 来使用 Kaiming 初始化
         - kaiming_ratio：kaiming初始化的系数。当网络的深度到达一定程度，原始的kaiming可能导致初始输出过大、变成NAN，这种情况下loss值会爆炸。
           使用kaiming_ratio可以进行缩放，使得初始输出变小，loss值回归正常。
@@ -399,7 +402,15 @@ class ConvVanilla(object):
         N, C, H, W = x.shape  # 输入张量的形状：N 为样本数量（批次大小），H 为输入张量的高度，W 为输入张量的宽度
         s, pad = conv_param['stride'], conv_param['pad']  # 获取卷积参数：s 为步长，pad 为填充
         H_out, W_out = 1 + (H + 2 * pad - HH) // s, 1 + (W + 2 * pad - WW) // s  # 计算输出张量的高度和宽度
-        padded_x = torch.nn.functional.pad(x, [pad] * 4, mode='constant', value=0)  # 对输入张量进行填充
+        
+        
+        # padded_x = torch.nn.functional.pad(x, [pad] * 4, mode='constant', value=0)  # 对输入张量进行填充
+        if pad != 0:
+            padded_x = torch.zeros(N, C, H + 2 * pad, W + 2 * pad, dtype=x.dtype, device=x.device)
+            padded_x[:, :, pad:-pad, pad:-pad] = x
+        else:
+            padded_x = x
+        
         out = torch.zeros(N, F, H_out, W_out, dtype=x.dtype, device=x.device)  # 初始化输出张量
 
         for p_i in range(N):  # 遍历输入张量中的每个样本
@@ -436,9 +447,14 @@ class ConvVanilla(object):
         N, C, H, W = x.shape
         H_out, W_out = 1 + (H + 2 * pad - HH) // s, 1 + (W + 2 * pad - WW) // s
 
-        padded_x = torch.nn.functional.pad(x, [pad] * 4, mode='constant', value=0)
+        if pad != 0:
+            padded_x = torch.zeros(N, C, H + 2 * pad, W + 2 * pad, dtype=x.dtype, device=x.device)
+            padded_x[:, :, pad:-pad, pad:-pad] = x
+        else:
+            padded_x = x
+        
+        
         dp_x = torch.zeros_like(padded_x)  # 求padded_x的导数，然后取出dx的部分
-
         for p_i in range(N):
             for f_i in range(F):
                 filter = w[f_i]  # (C, HH, WW)
@@ -519,7 +535,6 @@ class MaxPoolVanilla(object):
                         dx[p_i, c_i, id + row, jd + col] += dout[p_i, c_i, i, j]
 
         return dx
-
 
 
 class Conv(object):
@@ -605,6 +620,7 @@ class Conv(object):
         out = torch.zeros(N, C, H + 2 * pad, W + 2 * pad, dtype=NAhw.dtype,device=NAhw.device)
         NChwIJ = NAhw.reshape(N, C, I, J, h_out, w_out).permute(0, 1, 4, 5, 2, 3)  # NChwIJ
         # 遍历卷积核的每一个元素，恢复原始输入张量
+        #! 映射较为复杂，整理到笔记上
         for top in range(I):
             down = top + h_out * stride
             for left in range(J):
@@ -612,13 +628,12 @@ class Conv(object):
                 out[:, :, top:down:stride, left:right:stride] += NChwIJ[:, :, :, :, top, left]
         return out
 
-
 class MaxPool(object):
 
     @staticmethod
     def forward(x:Tensor, pool_param):
         """
-        最大池化层前向传播的朴素实现。
+        最大池化层前向传播的高速实现。
 
         输入：
         - x：输入数据，形状为(N, C, H, W)
@@ -649,7 +664,7 @@ class MaxPool(object):
     @staticmethod
     def backward(dout:Tensor, cache:Tuple[Tuple,Tensor,Tensor,Dict]):
         """
-        最大池化层反向传播的朴素实现。
+        最大池化层反向传播的高速实现。
         输入：
         - dout：上游导数
         - cache：与前向传播中的(x, pool_param)相同的元组。
@@ -660,7 +675,9 @@ class MaxPool(object):
         N, C, H, W = x_shape
         ph, pw, stride = pool_param['pool_height'], pool_param['pool_width'], pool_param['stride']
         H_out, W_out = 1 + (H - ph) // stride, 1 + (W - pw) // stride
-        x_colvectorized.zero_().scatter_(2, x_col_idx.unsqueeze(2), 1)  #? why  (N,C,phpw,hw)=(N,C,A,B)
+        
+        # 首先将x_colvectorized的所有值置为0，然后将前向过程中选取的最大值的位置（由x_col_idx表示）设置为1。
+        x_colvectorized.zero_().scatter_(2, x_col_idx.unsqueeze(2), 1)  #  (N,C,phpw,hw)=(N,C,A,B)
         
         dout_reshape = dout.reshape(N,C,-1)  # (N,C,B)
         tmp = torch.einsum('NCB,NCAB->NCAB',dout_reshape,x_colvectorized).reshape(N, C, ph, pw, H_out, W_out).permute(0, 1, 4, 5, 2, 3)
@@ -672,8 +689,6 @@ class MaxPool(object):
                 dx[:, :, top:down:stride, left:right:stride] += tmp[:, :, :, :, top, left]
         return dx
      
-
-
 class BatchNorm(object):
 
     @staticmethod
@@ -848,42 +863,10 @@ class SpatialBatchNorm(object):
         return dx, dgamma, dbeta
 
 
-class ManualConv_ReLU_Pool(object):
 
-    @staticmethod
-    def forward(x, w, b, conv_param, pool_param):
-        """
-        执行卷积，ReLU和池化。
-        输入:
-        - x: 卷积层的输入
-        - w, b, conv_param: 卷积层的权重和参数
-        - pool_param: 池化层的参数
-        返回一个元组:
-        - out: 池化层的输出
-        - cache: 用于反向传播的对象
-        """
-        a, conv_cache = Conv.forward(x, w, b, conv_param)
-        s, relu_cache = ReLU.forward(a)
-        out, pool_cache = MaxPool.forward(s, pool_param)
-        cache = (conv_cache, relu_cache, pool_cache)
-        return out, cache
-
-    @staticmethod
-    def backward(dout, cache):
-        """
-        反向传播计算梯度
-        """
-        conv_cache, relu_cache, pool_cache = cache
-        ds = MaxPool.backward(dout, pool_cache)
-        da = ReLU.backward(ds, relu_cache)
-        dx, dw, db = Conv.backward(da, conv_cache)
-        return dx, dw, db
-
-
-class ManualThreeLayerConvNet(object):
+class ThreeLayerConvNet(object):
     """
-    不使用任何torch的高级特性、只使用矩阵计算和广播完成的三层卷积神经网络。
-    所有用到的层类在`fully_connected_networks.py`中已实现。手写了正向和反向传播。
+    卷积-全连接-输出层 神经网络。
     
     结构如下:
     conv - relu - 2x2最大池化 - linear - relu - linear - softmax
@@ -948,8 +931,10 @@ class ManualThreeLayerConvNet(object):
         torch.save(checkpoint, path)
         print("Saved in {}".format(path))
 
-    def load(self, path):
-        checkpoint = torch.load(path, map_location='cpu')
+    def load(self, path, device='cpu'):
+        
+        checkpoint = torch.load(path, map_location=device)
+        print(f"load model in {device}!")
         self.params = checkpoint['params']
         self.dtype = checkpoint['dtype']
         self.reg = checkpoint['reg']
@@ -973,7 +958,7 @@ class ManualThreeLayerConvNet(object):
 
         # HINT: conv - relu - 2x2 max pool - linear - relu - linear - softmax
         cache_dict = {}
-        scores, cache_dict['CRP'] = ManualConv_ReLU_Pool.forward(X, W1, b1, conv_param, pool_param)
+        scores, cache_dict['CRP'] = Conv_ReLU_Pool.forward(X, W1, b1, conv_param, pool_param)
         scores, cache_dict['LR'] = Linear_ReLU.forward(scores, W2, b2)
         scores, cache_dict['L'] = Linear.forward(scores, W3, b3)
         if y is None:
@@ -987,7 +972,7 @@ class ManualThreeLayerConvNet(object):
         grads['W3'], grads['b3'] = dw + 2 * self.reg * W3, db
         dout, dw, db = Linear_ReLU.backward(dout, cache_dict['LR'])
         grads['W2'], grads['b2'] = dw + 2 * self.reg * W2, db
-        dout, dw, db = ManualConv_ReLU_Pool.backward(dout, cache_dict['CRP'])
+        dout, dw, db = Conv_ReLU_Pool.backward(dout, cache_dict['CRP'])
         grads['W1'], grads['b1'] = dw + 2 * self.reg * W1, db
 
         return loss, grads
@@ -1228,6 +1213,7 @@ class DeepConvNet(object):
         return loss, grads
 
 
+
 def kaiming_init(Din, Dout, K=None, relu=True, ratio=1., device='cpu',
                  dtype=torch.float32):
     """
@@ -1264,66 +1250,6 @@ def kaiming_init(Din, Dout, K=None, relu=True, ratio=1., device='cpu',
     return weight
 
 
-# 用torch的快速实现
-class FastConv(object):
-
-    @staticmethod
-    def forward(x, w, b, conv_param):
-        N, C, H, W = x.shape
-        F, _, HH, WW = w.shape
-        stride, pad = conv_param['stride'], conv_param['pad']
-        layer = torch.nn.Conv2d(C, F, (HH, WW), stride=stride, padding=pad)
-        layer.weight = torch.nn.Parameter(w)
-        layer.bias = torch.nn.Parameter(b)
-        tx = x.detach()
-        tx.requires_grad = True
-        out = layer(tx)
-        cache = (x, w, b, conv_param, tx, out, layer)
-        return out, cache
-
-    @staticmethod
-    def backward(dout, cache):
-        try:
-            x, _, _, _, tx, out, layer = cache
-            out.backward(dout)
-            dx = tx.grad.detach()
-            dw = layer.weight.grad.detach()
-            db = layer.bias.grad.detach()
-            layer.weight.grad = layer.bias.grad = None
-        except RuntimeError:
-            dx, dw, db = torch.zeros_like(tx), \
-                         torch.zeros_like(layer.weight), \
-                         torch.zeros_like(layer.bias)
-        return dx, dw, db
-
-
-class FastMaxPool(object):
-
-    @staticmethod
-    def forward(x, pool_param):
-        N, C, H, W = x.shape
-        pool_height, pool_width = \
-            pool_param['pool_height'], pool_param['pool_width']
-        stride = pool_param['stride']
-        layer = torch.nn.MaxPool2d(kernel_size=(pool_height, pool_width),
-                                   stride=stride)
-        tx = x.detach()
-        tx.requires_grad = True
-        out = layer(tx)
-        cache = (x, pool_param, tx, out, layer)
-        return out, cache
-
-    @staticmethod
-    def backward(dout, cache):
-        try:
-            x, _, tx, out, layer = cache
-            out.backward(dout)
-            dx = tx.grad.detach()
-        except RuntimeError:
-            dx = torch.zeros_like(tx)
-        return dx
-
-
 class Conv_ReLU(object):
 
     @staticmethod
@@ -1337,7 +1263,7 @@ class Conv_ReLU(object):
         - out: ReLU的输出
         - cache: 用于反向传播的对象
         """
-        a, conv_cache = FastConv.forward(x, w, b, conv_param)
+        a, conv_cache = Conv.forward(x, w, b, conv_param)
         out, relu_cache = ReLU.forward(a)
         cache = (conv_cache, relu_cache)
         return out, cache
@@ -1349,7 +1275,7 @@ class Conv_ReLU(object):
         """
         conv_cache, relu_cache = cache
         da = ReLU.backward(dout, relu_cache)
-        dx, dw, db = FastConv.backward(da, conv_cache)
+        dx, dw, db = Conv.backward(da, conv_cache)
         return dx, dw, db
 
 
@@ -1367,9 +1293,9 @@ class Conv_ReLU_Pool(object):
         - out: 池化层的输出
         - cache: 用于反向传播的对象
         """
-        a, conv_cache = FastConv.forward(x, w, b, conv_param)
+        a, conv_cache = Conv.forward(x, w, b, conv_param)
         s, relu_cache = ReLU.forward(a)
-        out, pool_cache = FastMaxPool.forward(s, pool_param)
+        out, pool_cache = MaxPool.forward(s, pool_param)
         cache = (conv_cache, relu_cache, pool_cache)
         return out, cache
 
@@ -1379,9 +1305,9 @@ class Conv_ReLU_Pool(object):
         反向传播计算梯度
         """
         conv_cache, relu_cache, pool_cache = cache
-        ds = FastMaxPool.backward(dout, pool_cache)
+        ds = MaxPool.backward(dout, pool_cache)
         da = ReLU.backward(ds, relu_cache)
-        dx, dw, db = FastConv.backward(da, conv_cache)
+        dx, dw, db = Conv.backward(da, conv_cache)
         return dx, dw, db
 
 
@@ -1389,17 +1315,6 @@ class Linear_BatchNorm_ReLU(object):
 
     @staticmethod
     def forward(x, w, b, gamma, beta, bn_param):
-        """
-        执行线性变换，批归一化和ReLU。
-        输入:
-        - x: 形状为(N, D1)的数组；线性层的输入
-        - w, b: 形状分别为(D1, D2)和(D2,)的数组，给出线性变换的权重和偏差。
-        - gamma, beta: 形状为(D2,)的数组，给出批归一化的缩放和平移参数。
-        - bn_param: 批归一化的参数字典。
-        返回:
-        - out: ReLU的输出，形状为(N, D2)
-        - cache: 用于反向传播的对象
-        """
         a, fc_cache = Linear.forward(x, w, b)
         a_bn, bn_cache = BatchNorm.forward(a, gamma, beta, bn_param)
         out, relu_cache = ReLU.forward(a_bn)
@@ -1419,10 +1334,12 @@ class Linear_BatchNorm_ReLU(object):
 
 
 class Conv_BatchNorm_ReLU(object):
-
+    """
+    组合层
+    """
     @staticmethod
     def forward(x, w, b, gamma, beta, conv_param, bn_param):
-        a, conv_cache = FastConv.forward(x, w, b, conv_param)
+        a, conv_cache = Conv.forward(x, w, b, conv_param)
         an, bn_cache = SpatialBatchNorm.forward(a, gamma,
                                                 beta, bn_param)
         out, relu_cache = ReLU.forward(an)
@@ -1434,26 +1351,28 @@ class Conv_BatchNorm_ReLU(object):
         conv_cache, bn_cache, relu_cache = cache
         dan = ReLU.backward(dout, relu_cache)
         da, dgamma, dbeta = SpatialBatchNorm.backward(dan, bn_cache)
-        dx, dw, db = FastConv.backward(da, conv_cache)
+        dx, dw, db = Conv.backward(da, conv_cache)
         return dx, dw, db, dgamma, dbeta
 
 
 class Conv_BatchNorm_ReLU_Pool(object):
-
+    """
+    卷积+BN+Relu+Pool组合层
+    """
     @staticmethod
     def forward(x, w, b, gamma, beta, conv_param, bn_param, pool_param):
-        a, conv_cache = FastConv.forward(x, w, b, conv_param)
+        a, conv_cache = Conv.forward(x, w, b, conv_param)
         an, bn_cache = SpatialBatchNorm.forward(a, gamma, beta, bn_param)
         s, relu_cache = ReLU.forward(an)
-        out, pool_cache = FastMaxPool.forward(s, pool_param)
+        out, pool_cache = MaxPool.forward(s, pool_param)
         cache = (conv_cache, bn_cache, relu_cache, pool_cache)
         return out, cache
 
     @staticmethod
     def backward(dout, cache):
         conv_cache, bn_cache, relu_cache, pool_cache = cache
-        ds = FastMaxPool.backward(dout, pool_cache)
+        ds = MaxPool.backward(dout, pool_cache)
         dan = ReLU.backward(ds, relu_cache)
         da, dgamma, dbeta = SpatialBatchNorm.backward(dan, bn_cache)
-        dx, dw, db = FastConv.backward(da, conv_cache)
+        dx, dw, db = Conv.backward(da, conv_cache)
         return dx, dw, db, dgamma, dbeta

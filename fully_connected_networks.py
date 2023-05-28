@@ -138,6 +138,7 @@ class Linear_ReLU(object):
         return dx, dw, db
 
 
+
 class TwoLayerNet(object):
     """
     一个具有ReLU和softmax的两层全连接神经网络，采用模块化层设计。
@@ -296,7 +297,6 @@ class TwoLayerNet(object):
         grads['W1'] = X.T.mm(grad_h0) + 2 * self.reg * self.params['W1']
         grads['b1'] = grad_h0.sum(dim=0)
         return loss, grads
-
 
 class FullyConnectedNet(object):
     """
@@ -483,7 +483,7 @@ class Dropout(object):
         - out：与x形状相同的张量。
         - cache：元组（dropout_param，mask）。在训练模式下，mask是用于乘以输入的dropout掩码；
           在测试模式下，mask为None。
-        注意：p是drop神经元输出的概率，不是保留的概率
+        注意：p是丢弃神经元的概率，不是保留神经元的概率
         """
         p, mode = dropout_param['p'], dropout_param['mode']
         out, mask = None, None

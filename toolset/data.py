@@ -203,7 +203,15 @@ def tensor_to_imggrid_show(X) ->list:
     
     img = torchvision.utils.make_grid(X, nrow=N)
     img = inverse_norm(img)
+    plt.figure(figsize=(12, 12))
     plt.axis("off")
+
     plt.imshow(utils.tensor_to_image(img))
     plt.show()
     return
+
+
+
+
+# 使用时:
+

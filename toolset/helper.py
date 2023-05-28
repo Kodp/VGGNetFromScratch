@@ -51,6 +51,7 @@ def get_mnist_data():
         "mnist_dataset/", train=False, download=True, transform=transform
     )
     
+    
     train_loader = torch.utils.data.DataLoader(MNIST_train_set, batch_size=len(MNIST_train_set), shuffle=True)
     test_loader = torch.utils.data.DataLoader(MNIST_test_set, batch_size=len(MNIST_test_set), shuffle=True)
 
@@ -100,7 +101,7 @@ def plot_solver(solver:Solver):
     plot_stats(stat_dict, lr_reg_str)
     
 
-def plot_stats(stat_dict, extra_str="",x=0.8,y=-0.11):
+def plot_stats(stat_dict, extra_str="",x=0.8,y=-0.11,loss_start_it=0):
     """
     绘制loss函数变化，训练验证的准确率变化。
     Args:
@@ -113,14 +114,15 @@ def plot_stats(stat_dict, extra_str="",x=0.8,y=-0.11):
         None
     """
     plt.subplot(1, 2, 1)
-    plt.plot(stat_dict['loss_history'], 'o')
+    plt.plot(stat_dict['loss_history'][loss_start_it:], 'o')
+    plt.xlim(loss_start_it, len(stat_dict['loss_history']))
     plt.title('Loss history')
     plt.xlabel('Iteration')
     plt.ylabel('Loss')
 
     plt.subplot(1, 2, 2)
-    plt.plot(stat_dict['train_acc_history'], 'o-', label='train')
-    plt.plot(stat_dict['val_acc_history'], 'o-', label='val')
+    plt.plot(stat_dict['train_acc_history'][:], 'o-', label='train')
+    plt.plot(stat_dict['val_acc_history'][:], 'o-', label='val')
     plt.title('Classification accuracy history')
     plt.xlabel('Epoch')
     plt.ylabel('Classification accuracy')

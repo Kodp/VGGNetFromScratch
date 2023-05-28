@@ -199,7 +199,7 @@ class Solver(object):  # 求解器
         self.print_every = kwargs.pop("print_every", 10)
         self.print_acc_every = kwargs.pop("print_acc_every", 1)
         self.verbose = kwargs.pop("verbose", True)
-        self.check_batch_size = kwargs.pop("check_batch_size", 200)
+        self.check_batch_size = kwargs.pop("check_batch_size", 100)
 
         # 如果存在未识别的参数则报错
         if len(kwargs) > 0:

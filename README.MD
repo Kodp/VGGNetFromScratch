@@ -2,12 +2,15 @@
 
 ![123](toolset/Convnet.png)
 
-使用纯torch函数复现卷积神经网络。**No torch.nn!**(除了最后一个VGGNet)
+使用**纯torch函数**复现卷积神经网络。
+
+**No torch.nn! No torch.nn!**
+
 
 实现了以下功能:
 
-- 自定义全连接层
-- 自定义普通卷积层、高速卷积层
+- 全连接层
+- 朴素卷积层、高速卷积层
 - 所有层的正向传播和反向传播
 - 梯度更新
 - 多种优化器(SGD，SGDMomentum，RMSprop，Adam)
