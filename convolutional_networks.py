@@ -36,341 +36,6 @@ from fully_connected_networks import Linear_ReLU, Linear, ReLU, Dropout
 from torch import Tensor
 from typing import Dict, List, Optional, Tuple
 
-class VggNet(object):
-    """
-    
-    VggNet风格的可自定义任意数量卷积层的卷积神经网络，之后连接任意数量的全连接层(在Vgg中是3层)。
-    
-    该类中需要的所有层均已手动实现(正向、反向传播)，并且有较好的性能。
-
-    Vgg风格是所有卷积层将使用3x3的卷积核和填充1来保持特征图的大小，通俗来说就是卷积之后宽高不变。(F1,H,W)->(F2,H,W)
-    所有池化层将是2x2的最大池化层，并且步幅为2，即每次减半特征图的大小。 (F,H,W)->(F,H/2,W/2)
-
-    网络的架构如下所示：
-    {卷积层 - 批归一化层 - ReLU - [池化层？]} x (filter) - {全连接-批归一化层 - [Dropout?]} x (FC-1) - 全连接层
-
-    相比DeepConvNet类，固定加上了批归一化(批归一化=Batch Normalization=BN，虽然原论文没有加BN，但是大多数实现中为了加快收敛速度，都采用了BN)
-
-    每个{...}结构都是一个"宏层"，包含一个卷积层、一个可选的批归一化层、一个ReLU非线性层和一个可选的池化层。
-    在L-1个宏层之后，使用一个全连接层来预测类别得分。
-
-    该网络对形状为(N, C, H, W)的数据小批量进行操作，其中N是图像数量，H和W分别是图像的高度和宽度，C是输入通道数。
-
-   
-
-    * 注意，参数不要用列表这种mutable对象。因为默认参数可能被永久改变导致错误:
-        def func(key, value, a={}):
-            a[key] = value
-            return a
-
-        print(func('a', 10))  # that's expected
-        >>> {'a': 10}
-        print(func('b', 20))  # that could be unexpected
-        >>> {'b': 20, 'a': 10}
-    * 这也表明，python的函数不是纯代码，而是一个对象(first-class object)
-
-    """
-
-    def __init__(self,
-                 input_dims: tuple = (3, 32, 32),
-                 num_filters: tuple = (32, 64, 128, 256, 256),
-                 max_pools: tuple = (0, 1, 2, 3, 4),
-                 num_FC: tuple = (128, 10),
-                 dropout: float = 0,  # 标量，(0,1)
-                 weight_scale=1e-3,
-                 kaiming_ratio=1.,
-                 reg=0.0,
-                 print_params=False,
-                 dtype=torch.float32,
-                 device='cpu'):
-        """
-        初始化一个新的网络。
-
-        输入：
-        - input_dims：元组 (C, H, W)，给出输入数据的大小
-        - num_filters：长度为 (L - 1) 的元组，给出每个宏层中要使用的卷积滤波器的数量
-        - max_pools：一个整数元组，给出应该具有最大池化的宏层的索引（从零开始）
-        - num_FC：一个整数元组，表示整个卷积层之后的FC层的层数和每层的神经元个数，元组最后一个值应是分类数num_classes
-        - dropout：[0,1]之间的浮点数，表示前向传播中丢弃神经元的概率。
-        - weight_scale：标量，给出权重随机初始化的标准差，或者使用字符串 "kaiming" 来使用 Kaiming 初始化
-        - kaiming_ratio：kaiming初始化的系数。当网络的深度到达一定程度，原始的kaiming可能导致初始输出过大、变成NAN，这种情况下loss值会爆炸。
-          使用kaiming_ratio可以进行缩放，使得初始输出变小，loss值回归正常。
-          对于十分类而言，最理想的loss值是log(10)，这里可以通过调节kaiming_ratio使得初始loss降低到3以内。
-          不需要特别小，对于vgg16只需要0.1~0.3就能降loss降低到3以下。
-        - reg：标量，给出 L2 正则化强度系数。L2 正则化只应用于卷积层和全连接层的权重矩阵；不应用于偏置项或批归一化的缩放和偏移。
-        - dtype：一个torch数据类型对象；所有计算将使用该数据类型进行。float 类型速度更快但精度较低，因此在数值梯度检查时应该使用 double 类型。
-        - device：用于计算的设备。'cpu' 或 'cuda'
-        """
-        self.input_dims = input_dims
-        self.num_filters = num_filters
-        self.num_layers = len(num_filters) + len(num_FC)  # 计算总的层数=卷积层数+全连接层数
-        self.num_FC = len(num_FC)  # 全连接层的数量
-        self.max_pools = max_pools
-        self.max_poolset = set(max_pools)
-        self.reg = reg  # 正则化系数
-        self.dtype = dtype  # 指定张量的数据类型
-        self.use_dropout = abs(dropout) > 1e-9
-        self.params = {}
-
-        if device == 'cuda':
-            device = 'cuda:0'  # 指定第0个GPU
-
-        C, H, W = input_dims  # 通道数、高度和宽度
-
-        # 1.初始化卷积参数和maxpool参数。
-        filter_size = 3
-        self.conv_param = {'stride': 1, 'pad': (filter_size - 1) // 2}
-        self.pool_param = {'pool_height': 2, 'pool_width': 2, 'stride': 2}
-
-        # 2.初始化BN参数。
-        # List[Dict]字典列表self.bn_params。这个列表将用于保存每个卷积层的批量归一化(Batch Normalization)参数。
-        # 对于批归一化，我们需要运行时的running_mean和running_var，所以需要将一个特殊的 bn_param 对象传递给每个BN层的前向传播。
-        # 将 self.bn_params[0] 传递给第一个批归一化层的前向传播，将 self.bn_params[1] 传递给第二个批归一化层的前向传播，依此类推。
-        self.bn_params = [{'mode': 'train'} for _ in range(self.num_layers - 1)]  # 最后一层不做BN
-
-        # 3.初始化Dropout参数。
-        # 当使用dropout时，我们需要向每个dropout层传递一个dropout_param字典，以便该层知道dropout概率和模式（train/test）。
-        # 将相同的dropout_param传递给每个dropout层。
-        self.dropout_param = {}
-        if self.use_dropout:
-            print("使用dropout。")
-            self.dropout_param = {'mode': 'train', 'p': dropout}
-
-        # 4.计算卷积层输出到全连接层的元素数量:
-        # torch maxpool的规则是不够则不卷积，即下取整，。例如7x7，2x2下采样步伐为2，则采样出来为3x3而不是4x4
-        # 注意2x2下采样，步伐为2，故分别在宽高上缩减2倍。不是拿总参数除以4倍，例如图像的HW都是奇数，下取整则7x7/4!=(7/2)x(7/2)
-        shrink = 2 ** len(self.max_poolset)
-        self.num_conv2fc = num_filters[-1] * (H // shrink) * (W // shrink)
-        layer = 1  # 初始化层数计数器，下标从1开始
-        ratio = kaiming_ratio
-
-        # 5.初始化权重
-        # 初始化卷积层
-        for F in num_filters:
-            if isinstance(weight_scale, str):  # kaiming初始化
-                self.params[f'W{layer}'] = kaiming_init(F, C, 3, ratio=ratio, dtype=dtype, device=device)
-            else:  # 正态分布初始化
-                self.params[f'W{layer}'] = weight_scale * torch.randn(F, C, 3, 3, dtype=dtype, device=device)
-
-            self.params[f'b{layer}'] = torch.zeros(F, dtype=dtype, device=device)
-            self.params[f'gamma{layer}'] = torch.ones(F, dtype=dtype, device=device)
-            self.params[f'beta{layer}'] = torch.zeros(F, dtype=dtype, device=device)
-            C = F  # C为上一层的Channel
-            layer += 1
-
-        C = self.num_conv2fc  # 卷积层到全连接层的元素数量
-
-        # 初始化全连接层+预测层
-        for fc in num_FC:
-            if isinstance(weight_scale, str):
-                self.params[f'W{layer}'] = kaiming_init(C, fc, relu=layer != self.num_layers, ratio=ratio, dtype=dtype,
-                                                        device=device)
-            else:
-                self.params[f'W{layer}'] = weight_scale * torch.randn(C, fc, dtype=dtype, device=device)
-
-            self.params[f'b{layer}'] = torch.zeros(fc, dtype=dtype, device=device)
-            if layer != self.num_layers:
-                self.params[f'gamma{layer}'] = torch.ones(fc, dtype=dtype, device=device)
-                self.params[f'beta{layer}'] = torch.zeros(fc, dtype=dtype, device=device)
-            C = fc
-            layer += 1
-
-        self._check_num_weights(device)
-
-        if print_params:
-            self.print_params()
-
-    def print_params(self):
-        """
-        逐个打印权重的名称和shape。
-        """
-        print("参数:")
-        for key, value in self.params.items():
-            print(f"\t{key}: {value.shape}")
-
-    def _check_num_weights(self, device):
-        """
-        检查权重的个数是否正确，用于排查错误。
-        不要在类外部手动调用。
-        Args:
-            device: 权重所处的设备
-        """
-
-        # 为了确保我们得到了正确数量的参数，我们首先计算每个"宏"层(含有卷积-ReLU-BN的层)应该有多少参数。
-        # 进行BN，那么每个宏层应有4个参数矩阵：权重、偏置、Bn的缩放因子和平移参数，即weight, bias, scale, shift
-        params_per_macro_layer = 4  # W、b、γ、β
-
-        # 计算模型中的总参数数量:
-        # 每个宏层的参数数量乘以宏层的数量-1，再加上2（这个2表示最后一层线性层的权重和偏置）。
-        num_params = params_per_macro_layer * (self.num_layers - 1) + 2
-
-        # 构造一个错误消息字符串，该消息将在参数数量不正确时显示。
-        msg = f'self.params has the wrong number of elements. Got {len(self.params)}; expected {num_params}'
-
-        # 使用断言语句来检查参数数量是否正确。如果参数数量不正确，将抛出异常并显示上面构造的错误消息。
-        assert len(self.params) == num_params, msg
-
-        # 对模型中的每一个参数进行检查，确保它们都在正确的设备上，并且有正确的数据类型。
-        for k, param in self.params.items():
-            # 构造错误消息字符串，该消息将在参数的设备不正确时显示。
-            msg = f'param "{k}" has device {param.device}; should be {device}'
-            # 使用断言语句来检查参数的设备是否正确。如果设备不正确，将抛出异常并显示上面构造的错误消息。
-            assert param.device == torch.device(device), msg
-
-            # 构造错误消息字符串，该消息将在参数的数据类型不正确时显示。
-            msg = f'param "{k}" has dtype {param.dtype}; should be {self.dtype}'
-            # 使用断言语句来检查参数的数据类型是否正确。如果数据类型不正确，将抛出异常并显示上面构造的错误消息。
-            assert param.dtype == self.dtype, msg
-
-    def check_loss(self, data_dict, num_samples=50, num_scores=10):
-        """
-        检查一批样本上的loss值(loss值的计算都是平均值)
-
-        Args:
-            data_dict: 数据
-            num_samples: 采样个数
-            num_scores: 打印的样本预测数量
-
-        """
-        scores = self.loss(data_dict['X_train'][:num_samples])
-        print(scores[:num_scores])
-        loss, _ = self.loss(data_dict['X_train'][:num_samples], data_dict['y_train'][:num_samples])
-        print(f"loss:{loss:.6f}")
-
-    def save(self, path):
-        checkpoint = {
-            'input_dims': self.input_dims,
-            'num_filters': self.num_filters,
-            'num_layers': self.num_layers,
-            'num_FC': self.num_FC,
-            'max_pools': self.max_pools,
-            'max_poolset': self.max_poolset,
-            'reg': self.reg,
-
-            'use_dropout': self.use_dropout,
-            'params': self.params,
-
-            'conv_param': self.conv_param,
-            'pool_param': self.pool_param,
-            'bn_params': self.bn_params,
-            'dropout_param': self.dropout_param,
-            'num_conv2fc': self.num_conv2fc,
-        }
-        torch.save(checkpoint, path)
-        print("Saved in {}".format(path))
-
-    def load(self, path, dtype, device):
-        checkpoint = torch.load(path, map_location='cpu')
-
-        self.input_dims = checkpoint['input_dims']
-        self.num_filters = checkpoint['num_filters']
-        self.num_layers = checkpoint['num_layers']
-        self.num_FC = checkpoint['num_FC']
-        self.max_pools = checkpoint['max_pools']
-        self.max_poolset = checkpoint['max_poolset']
-        self.reg = checkpoint['reg']
-
-        self.use_dropout = checkpoint['use_dropout']  # 一定注意更新代码要更新save和load函数
-        self.params = checkpoint['params']
-
-        self.conv_param = checkpoint['conv_param']
-        self.pool_param = checkpoint['pool_param']
-        self.bn_params = checkpoint['bn_params']
-        self.dropout_param = checkpoint['dropout_param']
-        self.num_conv2fc = checkpoint['num_conv2fc']
-
-        self.dtype = dtype
-        for p in self.params:
-            self.params[p] = self.params[p].type(dtype).to(device)
-
-        for i in range(len(self.bn_params)):
-            for p in ["running_mean", "running_var"]:
-                try:
-                    self.bn_params[i][p] = self.bn_params[i][p].type(dtype).to(device)
-                except KeyError:
-                    print(f"{i + 1}未使用BN？本网络设计成全部使用BN，哪里出了问题。")
-
-        print(f"成功加载checkpoint文件: {path}")
-
-    def loss(self, X, y=None):
-        """
-        计算深度卷积网络的损失和梯度，当y=None时仅预测。
-        输入/输出：与 ThreeLayerConvNet 相同的 API。
-        """
-        X = X.to(self.dtype)
-        mode = 'test' if y is None else 'train'
-        if self.use_dropout:
-            self.dropout_param['mode'] = mode
-
-        for bn_param in self.bn_params:  # 遍历list，list里每个元素是一层的bn参数字典            
-            bn_param['mode'] = mode
-
-        # HINT  {conv - [batchnorm] - relu - [pool?]} x (L - 1) - linear
-        cache_dict, dropout_cache = {}, {}
-        filters = self.num_layers - self.num_FC  # 卷积层数量
-        out = X
-
-        # 1.卷积层正向传播
-        for layer in range(1, filters + 1):
-            W, b = self.params[f'W{layer}'], self.params[f'b{layer}']
-            gamma, beta = self.params[f'gamma{layer}'], self.params[f'beta{layer}']
-            bn_param = self.bn_params[layer - 1]  # 引用传递
-            if layer - 1 in self.max_poolset:  # set O(1) 查询
-                out, cache_dict[layer] = Conv_BatchNorm_ReLU_Pool.forward(out, W, b, gamma, beta, self.conv_param,
-                                                                          bn_param, self.pool_param)
-                # ! BatchNorm.forward会修改bn_param, 向里面添加running_mean和runing_var。
-                # 导致下一轮计算的时候，bn_param的running参数不为空则取出，但是这是上一层添加的running参数、shape是上一层的，所以和当层的x参数shape不匹配、出错。
-                # @ 但是如果每次传入的bn_param是每一层的bn_param，则正好同步修改，不会出现上述问题
-            else:
-                out, cache_dict[layer] = Conv_BatchNorm_ReLU.forward(out, W, b, gamma, beta, self.conv_param, bn_param)
-            # print(out.shape)
-
-        # 2.全连接层(除了预测层)正向传播
-        for layer in range(filters + 1, self.num_layers):
-            W, b = self.params[f'W{layer}'], self.params[f'b{layer}']
-            gamma, beta = self.params[f'gamma{layer}'], self.params[f'beta{layer}']
-            bn_param = self.bn_params[layer - 1]  # 引用传递
-            out, cache_dict[layer] = Linear_BatchNorm_ReLU.forward(out, W, b, gamma, beta, bn_param)
-            # 采用Dropout的处理
-            if self.use_dropout:  # Dropout类里面已经区分开了train和test，例如test是直接输出
-                out, dropout_cache[layer] = Dropout.forward(out, self.dropout_param)
-
-        # 3.预测层正向传播
-        L = self.num_layers
-        out, cache_dict[L] = Linear.forward(out, self.params[f'W{L}'], self.params[f'b{L}'])
-
-        # 仅推理则返回结果
-        if y is None:
-            return out
-
-        # 计算loss
-        loss, grads = 0, {}
-        loss, dout = softmax_loss(out, y)
-        for layer in range(1, L + 1):
-            loss += self.reg * (self.params[f'W{layer}'] ** 2).sum()
-
-        # 3.预测层反向传播
-        dout, dw, db = Linear.backward(dout, cache_dict[L])
-        grads[f'W{L}'], grads[f'b{L}'] = dw + 2 * self.reg * self.params[f'W{L}'], db
-
-        # 2.全连接层(除了预测层)反向传播
-        for layer in range(filters + 1, L)[::-1]:  # [L-1...filters+1]
-            if self.use_dropout:
-                dout = Dropout.backward(dout, dropout_cache[layer])
-            dout, dw, db, dgamma, dbeta = Linear_BatchNorm_ReLU.backward(dout, cache_dict[layer])
-            grads[f'W{layer}'], grads[f'b{layer}'] = dw + 2 * self.reg * self.params[f'W{layer}'], db
-            grads[f'gamma{layer}'], grads[f'beta{layer}'] = dgamma, dbeta
-
-        # 1.卷积层反向传播
-        for layer in range(1, filters + 1)[::-1]:  # [filters...1]
-            if layer - 1 in self.max_poolset:
-                dout, dw, db, dgamma, dbeta = Conv_BatchNorm_ReLU_Pool.backward(dout, cache_dict[layer])
-            else:
-                dout, dw, db, dgamma, dbeta = Conv_BatchNorm_ReLU.backward(dout, cache_dict[layer])
-            grads[f'W{layer}'], grads[f'b{layer}'] = dw + 2 * self.reg * self.params[f'W{layer}'], db
-            grads[f'gamma{layer}'], grads[f'beta{layer}'] = dgamma, dbeta
-
-        return loss, grads
 
 
 class ConvVanilla(object):
@@ -1212,6 +877,341 @@ class DeepConvNet(object):
 
         return loss, grads
 
+class VggNet(object):
+    """
+    
+    VggNet风格的可自定义任意数量卷积层的卷积神经网络，之后连接任意数量的全连接层(在Vgg中是3层)。
+    
+    该类中需要的所有层均已手动实现(正向、反向传播)，并且有较好的性能。
+
+    Vgg风格是所有卷积层将使用3x3的卷积核和填充1来保持特征图的大小，通俗来说就是卷积之后宽高不变。(F1,H,W)->(F2,H,W)
+    所有池化层将是2x2的最大池化层，并且步幅为2，即每次减半特征图的大小。 (F,H,W)->(F,H/2,W/2)
+
+    网络的架构如下所示：
+    {卷积层 - 批归一化层 - ReLU - [池化层？]} x (filter) - {全连接-批归一化层 - [Dropout?]} x (FC-1) - 全连接层
+
+    相比DeepConvNet类，固定加上了批归一化(批归一化=Batch Normalization=BN，虽然原论文没有加BN，但是大多数实现中为了加快收敛速度，都采用了BN)
+
+    每个{...}结构都是一个"宏层"，包含一个卷积层、一个可选的批归一化层、一个ReLU非线性层和一个可选的池化层。
+    在L-1个宏层之后，使用一个全连接层来预测类别得分。
+
+    该网络对形状为(N, C, H, W)的数据小批量进行操作，其中N是图像数量，H和W分别是图像的高度和宽度，C是输入通道数。
+
+   
+
+    * 注意，参数不要用列表这种mutable对象。因为默认参数可能被永久改变导致错误:
+        def func(key, value, a={}):
+            a[key] = value
+            return a
+
+        print(func('a', 10))  # that's expected
+        >>> {'a': 10}
+        print(func('b', 20))  # that could be unexpected
+        >>> {'b': 20, 'a': 10}
+    * 这也表明，python的函数不是纯代码，而是一个对象(first-class object)
+
+    """
+
+    def __init__(self,
+                 input_dims: tuple = (3, 32, 32),
+                 num_filters: tuple = (32, 64, 128, 256, 256),
+                 max_pools: tuple = (0, 1, 2, 3, 4),
+                 num_FC: tuple = (128, 10),
+                 dropout: float = 0,  # 标量，(0,1)
+                 weight_scale=1e-3,
+                 kaiming_ratio=1.,
+                 reg=0.0,
+                 print_params=False,
+                 dtype=torch.float32,
+                 device='cpu'):
+        """
+        初始化一个新的网络。
+
+        输入：
+        - input_dims：元组 (C, H, W)，给出输入数据的大小
+        - num_filters：长度为 (L - 1) 的元组，给出每个宏层中要使用的卷积滤波器的数量
+        - max_pools：一个整数元组，给出应该具有最大池化的宏层的索引（从零开始）
+        - num_FC：一个整数元组，表示整个卷积层之后的FC层的层数和每层的神经元个数，元组最后一个值应是分类数num_classes
+        - dropout：[0,1]之间的浮点数，表示前向传播中丢弃神经元的概率。
+        - weight_scale：标量，给出权重随机初始化的标准差，或者使用字符串 "kaiming" 来使用 Kaiming 初始化
+        - kaiming_ratio：kaiming初始化的系数。当网络的深度到达一定程度，原始的kaiming可能导致初始输出过大、变成NAN，这种情况下loss值会爆炸。
+          使用kaiming_ratio可以进行缩放，使得初始输出变小，loss值回归正常。
+          对于十分类而言，最理想的loss值是log(10)，这里可以通过调节kaiming_ratio使得初始loss降低到3以内。
+          不需要特别小，对于vgg16只需要0.1~0.3就能降loss降低到3以下。
+        - reg：标量，给出 L2 正则化强度系数。L2 正则化只应用于卷积层和全连接层的权重矩阵；不应用于偏置项或批归一化的缩放和偏移。
+        - dtype：一个torch数据类型对象；所有计算将使用该数据类型进行。float 类型速度更快但精度较低，因此在数值梯度检查时应该使用 double 类型。
+        - device：用于计算的设备。'cpu' 或 'cuda'
+        """
+        self.input_dims = input_dims
+        self.num_filters = num_filters
+        self.num_layers = len(num_filters) + len(num_FC)  # 计算总的层数=卷积层数+全连接层数
+        self.num_FC = len(num_FC)  # 全连接层的数量
+        self.max_pools = max_pools
+        self.max_poolset = set(max_pools)
+        self.reg = reg  # 正则化系数
+        self.dtype = dtype  # 指定张量的数据类型
+        self.use_dropout = abs(dropout) > 1e-9
+        self.params = {}
+
+        if device == 'cuda':
+            device = 'cuda:0'  # 指定第0个GPU
+
+        C, H, W = input_dims  # 通道数、高度和宽度
+
+        # 1.初始化卷积参数和maxpool参数。
+        filter_size = 3
+        self.conv_param = {'stride': 1, 'pad': (filter_size - 1) // 2}
+        self.pool_param = {'pool_height': 2, 'pool_width': 2, 'stride': 2}
+
+        # 2.初始化BN参数。
+        # List[Dict]字典列表self.bn_params。这个列表将用于保存每个卷积层的批量归一化(Batch Normalization)参数。
+        # 对于批归一化，我们需要运行时的running_mean和running_var，所以需要将一个特殊的 bn_param 对象传递给每个BN层的前向传播。
+        # 将 self.bn_params[0] 传递给第一个批归一化层的前向传播，将 self.bn_params[1] 传递给第二个批归一化层的前向传播，依此类推。
+        self.bn_params = [{'mode': 'train'} for _ in range(self.num_layers - 1)]  # 最后一层不做BN
+
+        # 3.初始化Dropout参数。
+        # 当使用dropout时，我们需要向每个dropout层传递一个dropout_param字典，以便该层知道dropout概率和模式（train/test）。
+        # 将相同的dropout_param传递给每个dropout层。
+        self.dropout_param = {}
+        if self.use_dropout:
+            print("使用dropout。")
+            self.dropout_param = {'mode': 'train', 'p': dropout}
+
+        # 4.计算卷积层输出到全连接层的元素数量:
+        # torch maxpool的规则是不够则不卷积，即下取整，。例如7x7，2x2下采样步伐为2，则采样出来为3x3而不是4x4
+        # 注意2x2下采样，步伐为2，故分别在宽高上缩减2倍。不是拿总参数除以4倍，例如图像的HW都是奇数，下取整则7x7/4!=(7/2)x(7/2)
+        shrink = 2 ** len(self.max_poolset)
+        self.num_conv2fc = num_filters[-1] * (H // shrink) * (W // shrink)
+        layer = 1  # 初始化层数计数器，下标从1开始
+        ratio = kaiming_ratio
+
+        # 5.初始化权重
+        # 初始化卷积层
+        for F in num_filters:
+            if isinstance(weight_scale, str):  # kaiming初始化
+                self.params[f'W{layer}'] = kaiming_init(F, C, 3, ratio=ratio, dtype=dtype, device=device)
+            else:  # 正态分布初始化
+                self.params[f'W{layer}'] = weight_scale * torch.randn(F, C, 3, 3, dtype=dtype, device=device)
+
+            self.params[f'b{layer}'] = torch.zeros(F, dtype=dtype, device=device)
+            self.params[f'gamma{layer}'] = torch.ones(F, dtype=dtype, device=device)
+            self.params[f'beta{layer}'] = torch.zeros(F, dtype=dtype, device=device)
+            C = F  # C为上一层的Channel
+            layer += 1
+
+        C = self.num_conv2fc  # 卷积层到全连接层的元素数量
+
+        # 初始化全连接层+预测层
+        for fc in num_FC:
+            if isinstance(weight_scale, str):
+                self.params[f'W{layer}'] = kaiming_init(C, fc, relu=layer != self.num_layers, ratio=ratio, dtype=dtype,
+                                                        device=device)
+            else:
+                self.params[f'W{layer}'] = weight_scale * torch.randn(C, fc, dtype=dtype, device=device)
+
+            self.params[f'b{layer}'] = torch.zeros(fc, dtype=dtype, device=device)
+            if layer != self.num_layers:
+                self.params[f'gamma{layer}'] = torch.ones(fc, dtype=dtype, device=device)
+                self.params[f'beta{layer}'] = torch.zeros(fc, dtype=dtype, device=device)
+            C = fc
+            layer += 1
+
+        self._check_num_weights(device)
+
+        if print_params:
+            self.print_params()
+
+    def print_params(self):
+        """
+        逐个打印权重的名称和shape。
+        """
+        print("参数:")
+        for key, value in self.params.items():
+            print(f"\t{key}: {value.shape}")
+
+    def _check_num_weights(self, device):
+        """
+        检查权重的个数是否正确，用于排查错误。
+        不要在类外部手动调用。
+        Args:
+            device: 权重所处的设备
+        """
+
+        # 为了确保我们得到了正确数量的参数，我们首先计算每个"宏"层(含有卷积-ReLU-BN的层)应该有多少参数。
+        # 进行BN，那么每个宏层应有4个参数矩阵：权重、偏置、Bn的缩放因子和平移参数，即weight, bias, scale, shift
+        params_per_macro_layer = 4  # W、b、γ、β
+
+        # 计算模型中的总参数数量:
+        # 每个宏层的参数数量乘以宏层的数量-1，再加上2（这个2表示最后一层线性层的权重和偏置）。
+        num_params = params_per_macro_layer * (self.num_layers - 1) + 2
+
+        # 构造一个错误消息字符串，该消息将在参数数量不正确时显示。
+        msg = f'self.params has the wrong number of elements. Got {len(self.params)}; expected {num_params}'
+
+        # 使用断言语句来检查参数数量是否正确。如果参数数量不正确，将抛出异常并显示上面构造的错误消息。
+        assert len(self.params) == num_params, msg
+
+        # 对模型中的每一个参数进行检查，确保它们都在正确的设备上，并且有正确的数据类型。
+        for k, param in self.params.items():
+            # 构造错误消息字符串，该消息将在参数的设备不正确时显示。
+            msg = f'param "{k}" has device {param.device}; should be {device}'
+            # 使用断言语句来检查参数的设备是否正确。如果设备不正确，将抛出异常并显示上面构造的错误消息。
+            assert param.device == torch.device(device), msg
+
+            # 构造错误消息字符串，该消息将在参数的数据类型不正确时显示。
+            msg = f'param "{k}" has dtype {param.dtype}; should be {self.dtype}'
+            # 使用断言语句来检查参数的数据类型是否正确。如果数据类型不正确，将抛出异常并显示上面构造的错误消息。
+            assert param.dtype == self.dtype, msg
+
+    def check_loss(self, data_dict, num_samples=50, num_scores=10):
+        """
+        检查一批样本上的loss值(loss值的计算都是平均值)
+
+        Args:
+            data_dict: 数据
+            num_samples: 采样个数
+            num_scores: 打印的样本预测数量
+
+        """
+        scores = self.loss(data_dict['X_train'][:num_samples])
+        print(scores[:num_scores])
+        loss, _ = self.loss(data_dict['X_train'][:num_samples], data_dict['y_train'][:num_samples])
+        print(f"loss:{loss:.6f}")
+
+    def save(self, path):
+        checkpoint = {
+            'input_dims': self.input_dims,
+            'num_filters': self.num_filters,
+            'num_layers': self.num_layers,
+            'num_FC': self.num_FC,
+            'max_pools': self.max_pools,
+            'max_poolset': self.max_poolset,
+            'reg': self.reg,
+
+            'use_dropout': self.use_dropout,
+            'params': self.params,
+
+            'conv_param': self.conv_param,
+            'pool_param': self.pool_param,
+            'bn_params': self.bn_params,
+            'dropout_param': self.dropout_param,
+            'num_conv2fc': self.num_conv2fc,
+        }
+        torch.save(checkpoint, path)
+        print("Saved in {}".format(path))
+
+    def load(self, path, dtype, device):
+        checkpoint = torch.load(path, map_location='cpu')
+
+        self.input_dims = checkpoint['input_dims']
+        self.num_filters = checkpoint['num_filters']
+        self.num_layers = checkpoint['num_layers']
+        self.num_FC = checkpoint['num_FC']
+        self.max_pools = checkpoint['max_pools']
+        self.max_poolset = checkpoint['max_poolset']
+        self.reg = checkpoint['reg']
+
+        self.use_dropout = checkpoint['use_dropout']  # 一定注意更新代码要更新save和load函数
+        self.params = checkpoint['params']
+
+        self.conv_param = checkpoint['conv_param']
+        self.pool_param = checkpoint['pool_param']
+        self.bn_params = checkpoint['bn_params']
+        self.dropout_param = checkpoint['dropout_param']
+        self.num_conv2fc = checkpoint['num_conv2fc']
+
+        self.dtype = dtype
+        for p in self.params:
+            self.params[p] = self.params[p].type(dtype).to(device)
+
+        for i in range(len(self.bn_params)):
+            for p in ["running_mean", "running_var"]:
+                try:
+                    self.bn_params[i][p] = self.bn_params[i][p].type(dtype).to(device)
+                except KeyError:
+                    print(f"{i + 1}未使用BN？本网络设计成全部使用BN，哪里出了问题。")
+
+        print(f"成功加载checkpoint文件: {path}")
+
+    def loss(self, X, y=None):
+        """
+        计算深度卷积网络的损失和梯度，当y=None时仅预测。
+        输入/输出：与 ThreeLayerConvNet 相同的 API。
+        """
+        X = X.to(self.dtype)
+        mode = 'test' if y is None else 'train'
+        if self.use_dropout:
+            self.dropout_param['mode'] = mode
+
+        for bn_param in self.bn_params:  # 遍历list，list里每个元素是一层的bn参数字典            
+            bn_param['mode'] = mode
+
+        # HINT  {conv - [batchnorm] - relu - [pool?]} x (L - 1) - linear
+        cache_dict, dropout_cache = {}, {}
+        filters = self.num_layers - self.num_FC  # 卷积层数量
+        out = X
+
+        # 1.卷积层正向传播
+        for layer in range(1, filters + 1):
+            W, b = self.params[f'W{layer}'], self.params[f'b{layer}']
+            gamma, beta = self.params[f'gamma{layer}'], self.params[f'beta{layer}']
+            bn_param = self.bn_params[layer - 1]  # 引用传递
+            if layer - 1 in self.max_poolset:  # set O(1) 查询
+                out, cache_dict[layer] = Conv_BatchNorm_ReLU_Pool.forward(out, W, b, gamma, beta, self.conv_param,
+                                                                          bn_param, self.pool_param)
+                # ! BatchNorm.forward会修改bn_param, 向里面添加running_mean和runing_var。
+                # 导致下一轮计算的时候，bn_param的running参数不为空则取出，但是这是上一层添加的running参数、shape是上一层的，所以和当层的x参数shape不匹配、出错。
+                # @ 但是如果每次传入的bn_param是每一层的bn_param，则正好同步修改，不会出现上述问题
+            else:
+                out, cache_dict[layer] = Conv_BatchNorm_ReLU.forward(out, W, b, gamma, beta, self.conv_param, bn_param)
+            # print(out.shape)
+
+        # 2.全连接层(除了预测层)正向传播
+        for layer in range(filters + 1, self.num_layers):
+            W, b = self.params[f'W{layer}'], self.params[f'b{layer}']
+            gamma, beta = self.params[f'gamma{layer}'], self.params[f'beta{layer}']
+            bn_param = self.bn_params[layer - 1]  # 引用传递
+            out, cache_dict[layer] = Linear_BatchNorm_ReLU.forward(out, W, b, gamma, beta, bn_param)
+            # 采用Dropout的处理
+            if self.use_dropout:  # Dropout类里面已经区分开了train和test，例如test是直接输出
+                out, dropout_cache[layer] = Dropout.forward(out, self.dropout_param)
+
+        # 3.预测层正向传播
+        L = self.num_layers
+        out, cache_dict[L] = Linear.forward(out, self.params[f'W{L}'], self.params[f'b{L}'])
+
+        # 仅推理则返回结果
+        if y is None:
+            return out
+
+        # 计算loss
+        loss, grads = 0, {}
+        loss, dout = softmax_loss(out, y)
+        for layer in range(1, L + 1):
+            loss += self.reg * (self.params[f'W{layer}'] ** 2).sum()
+
+        # 3.预测层反向传播
+        dout, dw, db = Linear.backward(dout, cache_dict[L])
+        grads[f'W{L}'], grads[f'b{L}'] = dw + 2 * self.reg * self.params[f'W{L}'], db
+
+        # 2.全连接层(除了预测层)反向传播
+        for layer in range(filters + 1, L)[::-1]:  # [L-1...filters+1]
+            if self.use_dropout:
+                dout = Dropout.backward(dout, dropout_cache[layer])
+            dout, dw, db, dgamma, dbeta = Linear_BatchNorm_ReLU.backward(dout, cache_dict[layer])
+            grads[f'W{layer}'], grads[f'b{layer}'] = dw + 2 * self.reg * self.params[f'W{layer}'], db
+            grads[f'gamma{layer}'], grads[f'beta{layer}'] = dgamma, dbeta
+
+        # 1.卷积层反向传播
+        for layer in range(1, filters + 1)[::-1]:  # [filters...1]
+            if layer - 1 in self.max_poolset:
+                dout, dw, db, dgamma, dbeta = Conv_BatchNorm_ReLU_Pool.backward(dout, cache_dict[layer])
+            else:
+                dout, dw, db, dgamma, dbeta = Conv_BatchNorm_ReLU.backward(dout, cache_dict[layer])
+            grads[f'W{layer}'], grads[f'b{layer}'] = dw + 2 * self.reg * self.params[f'W{layer}'], db
+            grads[f'gamma{layer}'], grads[f'beta{layer}'] = dgamma, dbeta
+
+        return loss, grads
 
 
 def kaiming_init(Din, Dout, K=None, relu=True, ratio=1., device='cpu',

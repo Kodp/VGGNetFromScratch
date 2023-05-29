@@ -7,9 +7,7 @@ import copy
 
 def sgd(w, dw, config=None):
     """
-    Performs vanilla stochastic gradient descent.
-    config format:
-    - learning_rate: Scalar learning rate.
+    执行随机梯度下降。
     """
     if config is None:
         config = {}
