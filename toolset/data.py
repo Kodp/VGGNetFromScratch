@@ -213,5 +213,3 @@ def tensor_to_imggrid_show(X) ->list:
 
 
 
-# 使用时:
-

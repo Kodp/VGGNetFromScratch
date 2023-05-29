@@ -55,52 +55,64 @@ def tensor_to_image(tensor: torch.Tensor) -> np.ndarray:
     return x.to("cpu", torch.uint8).numpy()
 
 
+
 def visual_conv(Conv):
+    """演示卷积操作对图像处理的影响。
+
+    Args:
+    Conv (module): 一个执行卷积操作的模块。
+
+    使用两个图像（小猫和小狗）进行处理，演示卷积滤波器的使用。
+    """
+    
+    # 导入小猫和小狗的图片
     kitten_url = 'https://web.eecs.umich.edu/~justincj/teaching/eecs498/assets/a3/kitten.jpg'
     puppy_url = 'https://web.eecs.umich.edu/~justincj/teaching/eecs498/assets/a3/puppy.jpg'
-
     kitten = imread(kitten_url)
     puppy = imread(puppy_url)
-    # kitten is wide, and puppy is already square
+    
+    # 小猫图片较宽，裁剪成正方形
     d = kitten.shape[1] - kitten.shape[0]
     kitten_cropped = kitten[:, d // 2:-d // 2, :]
 
-    img_size = 200  # Make this smaller if it runs too slow
+    # 设置图像的大小
+    img_size = 200
+    # 将原始图片的大小调整为 img_size，并将其转换为张量
     resized_puppy = ToTensor()(Image.fromarray(puppy).resize((img_size, img_size)))
     resized_kitten = ToTensor()(Image.fromarray(
         kitten_cropped).resize((img_size, img_size)))
     x = torch.stack([resized_puppy, resized_kitten])
 
-    # Set up a convolutional weights holding 2 filters, each 3x3
+    # 创建两个3x3的卷积滤波器
     w = torch.zeros(2, 3, 3, 3, dtype=x.dtype)
 
-    # The first filter converts the image to grayscale.
-    # Set up the red, green, and blue channels of the filter.
+    # 第一个滤波器将图像转换为灰度图，设定红色，绿色和蓝色通道的权重
     w[0, 0, :, :] = torch.tensor([[0, 0, 0], [0, 0.3, 0], [0, 0, 0]])
     w[0, 1, :, :] = torch.tensor([[0, 0, 0], [0, 0.6, 0], [0, 0, 0]])
     w[0, 2, :, :] = torch.tensor([[0, 0, 0], [0, 0.1, 0], [0, 0, 0]])
 
-    # Second filter detects horizontal edges in the blue channel.
+    # 第二个滤波器在蓝色通道上检测水平边缘
     w[1, 2, :, :] = torch.tensor([[1, 2, 1], [0, 0, 0], [-1, -2, -1]])
 
-    # Vector of biases. We don't need any bias for the grayscale
-    # filter, but for the edge detection filter we want to add 128
-    # to each output so that nothing is negative.
+    # 偏置向量，对于灰度滤波器我们不需要偏置，但是对于边缘检测滤波器我们需要加上128以保证输出非负
     b = torch.tensor([0, 128], dtype=x.dtype)
 
-    # Compute the result of convolving each input in x with each filter in w,
-    # offsetting by b, and storing the results in out.
+    # 执行卷积操作，stride设置为1，pad设置为1
     out, _ = Conv.forward(x, w, b, {'stride': 1, 'pad': 1})
 
     def imshow_no_ax(img, normalize=True):
-        """ Tiny helper to show images as uint8 and remove axis labels """
+        """用于显示图像的小工具函数，将图像显示为uint8类型并移除坐
+        Args:
+        img (tensor): 待显示的图像。
+        normalize (bool): 是否需要正则化图像。
+        """
         if normalize:
             img_max, img_min = img.max(), img.min()
             img = 255.0 * (img - img_min) / (img_max - img_min)
         plt.imshow(img)
         plt.gca().axis('off')
 
-    # Show the original images and the results of the conv operation
+    # 显示原始图像和卷积操作的结果
     plt.subplot(2, 3, 1)
     imshow_no_ax(puppy, normalize=False)
     plt.title('Original image')

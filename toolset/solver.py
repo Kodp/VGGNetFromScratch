@@ -3,8 +3,6 @@ import time
 import torch
 import copy
 
-
-
 def sgd(w, dw, config=None):
     """
     执行随机梯度下降。
