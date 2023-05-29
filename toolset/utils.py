@@ -57,8 +57,9 @@ def tensor_to_image(tensor: torch.Tensor) -> np.ndarray:
 
 
 def visual_conv(Conv):
-    """演示卷积操作对图像处理的影响。
-
+    """
+    演示卷积操作对图像的影响。
+    
     Args:
     Conv (module): 一个执行卷积操作的模块。
 
