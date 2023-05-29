@@ -4,7 +4,7 @@
 
 使用**纯torch函数**复现卷积神经网络。
 
-**No torch.nn! No torch.nn!**
+**No torch.nn! No torch.autograd!**
 
 
 实现了以下功能:
@@ -38,5 +38,5 @@ ps:
 
 
 
-如果您觉得有用，不如给我点个免费的star，谢谢！
+如果您觉得有用，不如给我点个免费的star⭐，谢谢！
 
