@@ -583,9 +583,6 @@ class ThreeLayerConvNet(object):
         self.params['b2'] = torch.zeros(hidden_dim, dtype=dtype, device=device)
         self.params['W3'] = weight_scale * torch.randn(hidden_dim, num_classes, dtype=dtype, device=device)
         self.params['b3'] = torch.zeros(num_classes, dtype=dtype, device=device)
-        ######################################################################
-        #                            END OF YOUR CODE                        #
-        ######################################################################
 
     def save(self, path):
         checkpoint = {

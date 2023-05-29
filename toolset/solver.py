@@ -89,7 +89,7 @@ def adam(w, dw, config=None):
 
     # 将更新后的w存储在next_w变量中。同时更新存储在config中的m、v和t变量。
     # 为了和Solver输出匹配，t要先修改
-    # 公式见https://cs231n.github.io/neural-networks-3/#Adam
+    # 公式可参考https://cs231n.github.io/neural-networks-3/#Adam
     config['t'] += 1
     beta1, beta2 = config['beta1'], config['beta2']
 
@@ -423,7 +423,6 @@ class Solver(object):  # 求解器
 
                             except AttributeError:
                                 pass
-        #TODO 检查有效性
         if return_best_params:
             #! 由于带有bn的model需要额外的运行时BN参数，如果直接把self.best_params给到self.model.params,则会导致BN参数不匹配
             # 进而导致造成准确率低下。
