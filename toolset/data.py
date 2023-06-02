@@ -188,7 +188,7 @@ def preprocess_cifar10(
 
 
 
-def tensor_to_imggrid_show(X) ->list:
+def tensor_to_imggrid_show(X):
     classes = ["plane", "car", "bird", "cat", "deer", "dog", "frog", "horse", "ship", "truck"]
     
     inverse_norm = transforms.Compose(
