@@ -2,7 +2,7 @@
 
 ![123](toolset/Convnet.png)
 
-使用**纯torch函数**复现卷积神经网络。
+只使用pytorch的**矩阵操作**复现卷积神经网络。
 
 **No torch.nn! No torch.autograd!**
 

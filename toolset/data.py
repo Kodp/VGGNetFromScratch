@@ -11,12 +11,12 @@ import matplotlib.pyplot as plt
 
 def _extract_tensors(dset, num=None, x_dtype=torch.float32) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    将CIFAR10对象转为tensor返回。
+    将 CIFAR10 对象转为 tensor返回。
 
     Args:
         dset: torcvision.datasets.CIFAR10对象
         num: [可选] 需要的样本数量
-        x_dtype: [可选] 将图像转换成的数据格式，默认float32
+        x_dtype: [可选] 将图像转换成的数据格式，默认 float32
 
     Returns:
         x: x_dtype类型的tensor，值的范围[0,1]，shape(N,3,32,32)

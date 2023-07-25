@@ -40,7 +40,7 @@ def reset_seed(number: int) -> None:
 
 def tensor_to_image(tensor: torch.Tensor) -> np.ndarray:
     """
-    将tensor转换为ndarray并修改维度顺序，用来可视化。不修改源数据。
+    将Normalize之后的tensor转换为ndarray并修改维度顺序，用来可视化。不修改源数据。
 
     Args:
         tensor: 形态为(3, H, W)，值的范围为[0, 1] 的torch tensor
