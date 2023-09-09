@@ -4,7 +4,7 @@
 
 只使用pytorch的**矩阵操作**复现卷积神经网络。
 
-**No torch.nn! No torch.autograd!**
+**No torch.nn， No torch.autograd， No torch.optim.**
 
 
 实现了以下功能:
